@@ -30,6 +30,9 @@ fn denied(path: &Path, e: &io::Error) -> Error {
 /// fsync the directory. A running AppImage keeps working (its inode lives on
 /// until it exits). On any failure `dest` is untouched and the temp file is removed.
 pub fn replace_file_atomically(src: &Path, dest: &Path) -> Result<()> {
+    // A symlinked AppImage is updated at its real path; the link stays a link.
+    let real = fs::canonicalize(dest).unwrap_or_else(|_| dest.to_path_buf());
+    let dest = real.as_path();
     let dir = dest.parent().ok_or_else(|| fail("The install location has no folder"))?;
     let name = dest.file_name().ok_or_else(|| fail("The install location has no file name"))?.to_string_lossy().into_owned();
     // Keep the old mode, but make sure the owner can run it.
@@ -72,6 +75,40 @@ fn bad_archive(e: impl std::fmt::Display) -> Error {
     fail(format!("The downloaded archive could not be read: {e}"))
 }
 
+/// Limits against decompression bombs.
+#[derive(Debug, Clone, Copy)]
+pub struct ExtractLimits {
+    /// Total size of all entries, as declared in the archive.
+    pub max_bytes: u64,
+    pub max_entries: usize,
+}
+
+impl Default for ExtractLimits {
+    fn default() -> ExtractLimits {
+        ExtractLimits { max_bytes: 2 * 1024 * 1024 * 1024, max_entries: 100_000 }
+    }
+}
+
+struct Budget {
+    limits: ExtractLimits,
+    bytes: u64,
+    entries: usize,
+}
+
+impl Budget {
+    fn charge(&mut self, size: u64) -> Result<()> {
+        self.entries += 1;
+        self.bytes = self.bytes.saturating_add(size);
+        if self.entries > self.limits.max_entries {
+            return Err(fail(format!("The update archive has more than {} files; refusing to unpack it", self.limits.max_entries)));
+        }
+        if self.bytes > self.limits.max_bytes {
+            return Err(fail(format!("The update archive unpacks to more than {} bytes; refusing to unpack it", self.limits.max_bytes)));
+        }
+        Ok(())
+    }
+}
+
 /// Where the tarball goes: which archive prefix to drop and which directory to
 /// extract into.
 #[derive(Debug, PartialEq, Eq)]
@@ -80,17 +117,42 @@ struct Layout {
     root: PathBuf,
 }
 
+/// May an archive be unpacked into `root`? Never `/`, the home folder, or any
+/// ancestor of it; and not directly into a hidden folder of the home folder
+/// (`~/.ssh`, `~/.config`, ...) other than `~/.local`.
+fn root_acceptable(root: &Path, home: &Path) -> bool {
+    if root.components().count() < 2 || home.starts_with(root) {
+        return false;
+    }
+    if root.parent() == Some(home) {
+        let hidden = root.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'));
+        if hidden && root.file_name().is_some_and(|n| n != ".local") {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_metadata_entry(t: tar::EntryType) -> bool {
+    matches!(t, tar::EntryType::XGlobalHeader | tar::EntryType::XHeader | tar::EntryType::GNULongName | tar::EntryType::GNULongLink)
+}
+
 /// Match the archive against the installed executable. The archive entry for
 /// the executable (same file name, longest common path suffix with `exe`)
 /// tells how the archive is laid out: everything above that suffix in the
 /// archive is dropped, everything above it in `exe`'s path is the install root.
-fn find_layout(archive: &Path, exe: &Path) -> Result<Layout> {
+/// If that root would be the home folder or above it (an archive unpacked
+/// straight into `~`), the root is moved down one component at a time, so the
+/// archive's own top folder becomes the root, until it is acceptable.
+fn find_layout(archive: &Path, exe: &Path, home: &Path, limits: ExtractLimits) -> Result<Layout> {
     let exe_parts = clean_components(&exe.components().skip(1).collect::<PathBuf>()).ok_or_else(|| fail("Unexpected executable path"))?;
     let exe_name = exe_parts.last().ok_or_else(|| fail("Unexpected executable path"))?.clone();
     let mut best: Option<(usize, Vec<String>)> = None;
+    let mut budget = Budget { limits, bytes: 0, entries: 0 };
     let mut ar = open_tar(archive)?;
     for ent in ar.entries().map_err(bad_archive)? {
         let ent = ent.map_err(bad_archive)?;
+        budget.charge(ent.header().size().unwrap_or(0))?;
         if !ent.header().entry_type().is_file() {
             continue;
         }
@@ -108,50 +170,74 @@ fn find_layout(archive: &Path, exe: &Path) -> Result<Layout> {
             best = Some((k, parts));
         }
     }
-    let (k, parts) = best.ok_or_else(|| fail(format!("The update archive does not contain {exe_name}, so praeco cannot tell where to put it")))?;
-    if k >= exe_parts.len() {
-        return Err(fail("Unexpected executable path"));
+    let (mut k, parts) = best.ok_or_else(|| fail(format!("The update archive does not contain {exe_name}, so praeco cannot tell where to put it")))?;
+    k = k.min(exe_parts.len() - 1);
+    while k >= 1 {
+        let root: PathBuf = Path::new("/").join(exe_parts[..exe_parts.len() - k].join("/"));
+        if root_acceptable(&root, home) {
+            return Ok(Layout { prefix: parts[..parts.len() - k].to_vec(), root });
+        }
+        k -= 1;
     }
-    let root: PathBuf = Path::new("/").join(exe_parts[..exe_parts.len() - k].join("/"));
-    Ok(Layout { prefix: parts[..parts.len() - k].to_vec(), root })
+    Err(fail(format!(
+        "Refusing to unpack over {}: the install would land in your home folder or above it",
+        home.display()
+    )))
 }
 
-/// Extract `archive` over the install that contains `exe`.
+/// Extract `archive` over the install that contains `exe`. `home` is the user's
+/// home folder (the install must be strictly inside it).
 ///
 /// 1. Work out the install root from the archive layout (see `find_layout`).
+///    Only the subtree below the archive prefix is unpacked; an archive entry
+///    outside it is an error, and nothing is installed.
 /// 2. Extract into a private staging directory inside that root (same file
-///    system), refusing absolute paths, `..`, hard links, devices, and
-///    symlinks that point outside their own tree.
+///    system), refusing absolute paths, `..`, hard links, devices, and symlinks
+///    that point outside their own tree, and archives over the size and file
+///    count limits.
 /// 3. Rename each staged file over its destination. Each rename is atomic, so
-///    a running program never sees a half-written file; the tree as a whole
-///    is not one transaction. Files that exist on disk but not in the archive
-///    are left alone.
-pub fn install_tarball(archive: &Path, exe: &Path) -> Result<()> {
+///    a running program never sees a half-written file; the tree as a whole is
+///    not one transaction. Files that exist on disk but not in the archive are
+///    left alone.
+pub fn install_tarball(archive: &Path, exe: &Path, home: &Path) -> Result<()> {
+    install_tarball_with(archive, exe, home, ExtractLimits::default())
+}
+
+pub fn install_tarball_with(archive: &Path, exe: &Path, home: &Path, limits: ExtractLimits) -> Result<()> {
     let exe = fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
-    let layout = find_layout(archive, &exe)?;
+    let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let layout = find_layout(archive, &exe, &home, limits)?;
     let root = &layout.root;
-    if root.components().count() < 3 {
-        return Err(fail(format!("Refusing to unpack over {}", root.display())));
-    }
     let stage = tempfile::Builder::new().prefix(".praeco-stage-").tempdir_in(root).map_err(|e| denied(root, &e))?;
 
+    let mut budget = Budget { limits, bytes: 0, entries: 0 };
     let mut ar = open_tar(archive)?;
     let mut extracted = 0usize;
     for ent in ar.entries().map_err(bad_archive)? {
         let mut ent = ent.map_err(bad_archive)?;
+        let ty = ent.header().entry_type();
+        if is_metadata_entry(ty) {
+            continue;
+        }
+        budget.charge(ent.header().size().unwrap_or(0))?;
         let path = ent.path().map_err(bad_archive)?.into_owned();
         let Some(parts) = clean_components(&path) else {
             return Err(fail(format!("The update archive contains an unsafe path ({}); nothing was installed", path.display())));
         };
+        if parts.is_empty() {
+            continue; // the "./" entry
+        }
         if !parts.starts_with(&layout.prefix) {
-            continue;
+            return Err(fail(format!(
+                "The update archive contains {} outside the app's own folder; nothing was installed",
+                path.display()
+            )));
         }
         let rel = &parts[layout.prefix.len()..];
         if rel.is_empty() {
             continue;
         }
         let out = stage.path().join(rel.join("/"));
-        let ty = ent.header().entry_type();
         if ty.is_dir() {
             fs::create_dir_all(&out)?;
         } else if ty.is_file() {
@@ -266,7 +352,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let tgz = d.path().join("a.tar.gz");
         make_tgz(&tgz, &[("fairfax-1.0.5/bin/fairfax", b"x", 0o755), ("fairfax-1.0.5/share/a", b"y", 0o644)], &[]);
-        let l = find_layout(&tgz, Path::new("/home/u/.local/bin/fairfax")).unwrap();
+        let l = find_layout(&tgz, Path::new("/home/u/.local/bin/fairfax"), Path::new("/home/u"), ExtractLimits::default()).unwrap();
         assert_eq!(l.root, PathBuf::from("/home/u/.local"));
         assert_eq!(l.prefix, ["fairfax-1.0.5"]);
     }
@@ -284,7 +370,7 @@ mod tests {
             &[("fairfax-linux/bin/fairfax", b"new", 0o755), ("fairfax-linux/lib/x.so.1", b"lib", 0o644)],
             &[("fairfax-linux/lib/x.so", "x.so.1")],
         );
-        install_tarball(&tgz, &root.join("bin/fairfax")).unwrap();
+        install_tarball(&tgz, &root.join("bin/fairfax"), &d.path().join("home")).unwrap();
         assert_eq!(fs::read_to_string(root.join("bin/fairfax")).unwrap(), "new");
         assert_eq!(fs::metadata(root.join("bin/fairfax")).unwrap().permissions().mode() & 0o777, 0o755);
         assert_eq!(fs::read_to_string(root.join("lib/x.so.1")).unwrap(), "lib");
@@ -302,7 +388,7 @@ mod tests {
         fs::write(root.join("bin/fairfax"), "old").unwrap();
         let tgz = d.path().join("evil.tar.gz");
         make_tgz(&tgz, &[("bin/fairfax", b"new", 0o755)], &[("bin/evil", "../../../etc/passwd")]);
-        let err = install_tarball(&tgz, &root.join("bin/fairfax")).unwrap_err();
+        let err = install_tarball(&tgz, &root.join("bin/fairfax"), &d.path().join("home")).unwrap_err();
         assert_eq!(err.code, ErrorCode::InstallFailed);
         assert_eq!(fs::read_to_string(root.join("bin/fairfax")).unwrap(), "old");
     }
@@ -315,6 +401,104 @@ mod tests {
         fs::write(root.join("bin/fairfax"), "old").unwrap();
         let tgz = d.path().join("a.tar.gz");
         make_tgz(&tgz, &[("README", b"hi", 0o644)], &[]);
-        assert!(install_tarball(&tgz, &root.join("bin/fairfax")).is_err());
+        assert!(install_tarball(&tgz, &root.join("bin/fairfax"), &d.path().join("home")).is_err());
+    }
+
+    fn home_with_exe(d: &Path, rel: &str) -> (PathBuf, PathBuf) {
+        let home = d.join("home");
+        let exe = home.join(rel);
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::write(&exe, "old").unwrap();
+        (home, exe)
+    }
+
+    #[test]
+    fn tarball_unpacked_in_home_cannot_overwrite_home_files() {
+        // Fairfax's tarball unpacked straight into the home folder.
+        let d = tempfile::tempdir().unwrap();
+        let (home, exe) = home_with_exe(d.path(), "fairfax-linux-x86_64/lib/fairfax/fairfax");
+        fs::write(home.join(".bashrc"), "mine").unwrap();
+        let tgz = d.path().join("evil.tar.gz");
+        make_tgz(&tgz, &[("fairfax-linux-x86_64/lib/fairfax/fairfax", b"new", 0o755), (".bashrc", b"owned", 0o644)], &[]);
+        let err = install_tarball(&tgz, &exe, &home).unwrap_err();
+        assert!(err.message.contains("outside the app's own folder"), "{}", err.message);
+        assert_eq!(fs::read_to_string(home.join(".bashrc")).unwrap(), "mine");
+        assert_eq!(fs::read_to_string(&exe).unwrap(), "old", "nothing was installed");
+    }
+
+    #[test]
+    fn tarball_unpacked_in_home_installs_into_its_own_folder_only() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, exe) = home_with_exe(d.path(), "fairfax-linux-x86_64/lib/fairfax/fairfax");
+        let tgz = d.path().join("a.tar.gz");
+        make_tgz(&tgz, &[("fairfax-linux-x86_64/lib/fairfax/fairfax", b"new", 0o755), ("fairfax-linux-x86_64/share/a", b"x", 0o644)], &[]);
+        install_tarball(&tgz, &exe, &home).unwrap();
+        assert_eq!(fs::read_to_string(&exe).unwrap(), "new");
+        assert!(home.join("fairfax-linux-x86_64/share/a").exists());
+        let top: Vec<_> = fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(top, ["fairfax-linux-x86_64"], "{top:?}");
+    }
+
+    #[test]
+    fn tarball_may_never_unpack_into_home_itself_or_hidden_config_folders() {
+        let d = tempfile::tempdir().unwrap();
+        // The executable sits directly in $HOME: the only possible root is $HOME.
+        let (home, exe) = home_with_exe(d.path(), "fairfax");
+        let tgz = d.path().join("a.tar.gz");
+        make_tgz(&tgz, &[("fairfax", b"new", 0o755), (".bashrc", b"owned", 0o644)], &[]);
+        assert!(install_tarball(&tgz, &exe, &home).unwrap_err().message.contains("home folder"));
+        assert!(!home.join(".bashrc").exists());
+        // Directly inside a hidden folder such as ~/.ssh.
+        let (home2, exe2) = home_with_exe(&d.path().join("two"), ".ssh/fairfax");
+        make_tgz(&tgz, &[("fairfax", b"new", 0o755), ("authorized_keys", b"owned", 0o644)], &[]);
+        assert!(install_tarball(&tgz, &exe2, &home2).is_err());
+        assert!(!home2.join(".ssh/authorized_keys").exists());
+    }
+
+    #[test]
+    fn root_acceptability() {
+        let home = Path::new("/home/u");
+        assert!(!root_acceptable(Path::new("/"), home));
+        assert!(!root_acceptable(Path::new("/home"), home), "an ancestor of home");
+        assert!(!root_acceptable(home, home));
+        assert!(!root_acceptable(Path::new("/home/u/.config"), home));
+        assert!(root_acceptable(Path::new("/home/u/.local"), home));
+        assert!(root_acceptable(Path::new("/home/u/.local/opt/fairfax"), home));
+        assert!(root_acceptable(Path::new("/home/u/Apps/fairfax"), home));
+    }
+
+    #[test]
+    fn tarball_size_and_count_limits() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("opt/fairfax");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin/fairfax"), "old").unwrap();
+        let big = vec![0u8; 100_000];
+        let tgz = d.path().join("bomb.tar.gz");
+        make_tgz(&tgz, &[("bin/fairfax", b"new", 0o755), ("bin/big", &big, 0o644)], &[]);
+        let home = d.path().join("home");
+        let e = install_tarball_with(&tgz, &root.join("bin/fairfax"), &home, ExtractLimits { max_bytes: 50_000, max_entries: 100 }).unwrap_err();
+        assert!(e.message.contains("unpacks to more than"), "{}", e.message);
+        let e = install_tarball_with(&tgz, &root.join("bin/fairfax"), &home, ExtractLimits { max_bytes: 1 << 30, max_entries: 1 }).unwrap_err();
+        assert!(e.message.contains("more than 1 files"), "{}", e.message);
+        assert_eq!(fs::read_to_string(root.join("bin/fairfax")).unwrap(), "old");
+        install_tarball_with(&tgz, &root.join("bin/fairfax"), &home, ExtractLimits::default()).unwrap();
+        assert_eq!(fs::read_to_string(root.join("bin/fairfax")).unwrap(), "new");
+    }
+
+    #[test]
+    fn symlinked_appimage_is_updated_at_its_real_path() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real/Fairfax.AppImage");
+        fs::create_dir_all(real.parent().unwrap()).unwrap();
+        fs::write(&real, "old").unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        let link = d.path().join("Fairfax.AppImage");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let src = d.path().join("new");
+        fs::write(&src, "new").unwrap();
+        replace_file_atomically(&src, &link).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link is still a link");
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new");
     }
 }

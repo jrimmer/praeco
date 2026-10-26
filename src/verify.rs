@@ -33,10 +33,10 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn asset_url(source: &Source, asset: &Asset) -> Result<Url> {
+fn asset_url(source: &Source, release: &Release, asset: &Asset) -> Result<Url> {
     let url = Url::parse(&asset.url)
         .map_err(|_| Error::new(ErrorCode::Download, format!("The release lists a bad address for {}", asset.name)))?;
-    if !source.allows_download(&url) {
+    if !source.allows_download(&url, &release.assets) {
         return Err(Error::new(
             ErrorCode::Download,
             format!("Refusing to download {}: its address is not part of {}/{}'s releases", asset.name, source.owner, source.repo),
@@ -50,11 +50,12 @@ fn asset_url(source: &Source, asset: &Asset) -> Result<Url> {
 pub fn download(
     http: &Http,
     source: &Source,
+    release: &Release,
     asset: &Asset,
     dir: &Path,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<PathBuf> {
-    let url = asset_url(source, asset)?;
+    let url = asset_url(source, release, asset)?;
     let name = Path::new(&asset.name).file_name().and_then(|n| n.to_str());
     if name != Some(asset.name.as_str()) || asset.name.starts_with('.') {
         return Err(Error::new(ErrorCode::Download, format!("The release has an odd file name ({:?}); not downloading it", asset.name)));
@@ -130,8 +131,8 @@ pub fn parse_checksum(contents: &str, name: &str, bare_ok: bool) -> Option<Strin
     None
 }
 
-fn fetch_text(http: &Http, source: &Source, asset: &Asset) -> Result<String> {
-    let url = asset_url(source, asset)?;
+fn fetch_text(http: &Http, source: &Source, release: &Release, asset: &Asset) -> Result<String> {
+    let url = asset_url(source, release, asset)?;
     let resp = http.get(&url, "text/plain", None, &[])?;
     if resp.status() != 200 {
         return Err(Error::new(ErrorCode::Download, format!("Could not fetch {} (HTTP {})", asset.name, resp.status())));
@@ -148,12 +149,12 @@ pub fn verify(http: &Http, source: &Source, release: &Release, asset: &Asset, fi
     let sidecar = format!("{}.sha256", asset.name);
     let mut expected: Vec<(String, String)> = Vec::new();
     if let Some(a) = release.assets.iter().find(|a| a.name == sidecar) {
-        if let Some(h) = parse_checksum(&fetch_text(http, source, a)?, &asset.name, true) {
+        if let Some(h) = parse_checksum(&fetch_text(http, source, release, a)?, &asset.name, true) {
             expected.push((sidecar.clone(), h));
         }
     }
     if let Some(a) = release.assets.iter().find(|a| matches!(a.name.to_ascii_lowercase().as_str(), "sha256sums" | "sha256sums.txt")) {
-        if let Some(h) = parse_checksum(&fetch_text(http, source, a)?, &asset.name, false) {
+        if let Some(h) = parse_checksum(&fetch_text(http, source, release, a)?, &asset.name, false) {
             expected.push((a.name.clone(), h));
         }
     }

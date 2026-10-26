@@ -10,6 +10,8 @@ use url::Url;
 
 pub struct Http {
     agent: ureq::Agent,
+    /// Plain HTTP to loopback is allowed (only for loopback sources).
+    loopback_http: bool,
 }
 
 impl Default for Http {
@@ -19,7 +21,23 @@ impl Default for Http {
 }
 
 impl Http {
+    /// Strict client: HTTPS only, on every hop.
     pub fn new() -> Http {
+        Http::build(false)
+    }
+
+    /// Client for `source`: strict, except that a source that is itself a
+    /// loopback HTTP address may use loopback HTTP (tests, local mirrors).
+    pub fn for_source(source: &crate::source::Source) -> Http {
+        Http::build(source.loopback_http())
+    }
+
+    /// May a request (or redirect hop) go to `url`?
+    pub fn hop_allowed(&self, url: &Url) -> bool {
+        scheme_allowed(url, self.loopback_http)
+    }
+
+    fn build(loopback_http: bool) -> Http {
         let agent = ureq::AgentBuilder::new()
             .redirects(0)
             .timeout_connect(Duration::from_secs(15))
@@ -28,7 +46,7 @@ impl Http {
             .user_agent(concat!("praeco/", env!("CARGO_PKG_VERSION")))
             .try_proxy_from_env(true)
             .build();
-        Http { agent }
+        Http { agent, loopback_http }
     }
 
     /// GET with manual redirects. Returns the final response whatever its
@@ -37,7 +55,7 @@ impl Http {
     pub fn get(&self, url: &Url, accept: &str, auth: Option<&str>, extra: &[(&str, &str)]) -> Result<ureq::Response> {
         let mut cur = url.clone();
         for _ in 0..6 {
-            if !scheme_allowed(&cur) {
+            if !self.hop_allowed(&cur) {
                 return Err(Error::new(ErrorCode::Network, format!("Refusing to use an insecure connection to {}", cur.host_str().unwrap_or("?"))));
             }
             let mut req = self.agent.get(cur.as_str()).set("Accept", accept);

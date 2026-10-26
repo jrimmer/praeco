@@ -37,6 +37,7 @@ impl Rig {
         write_exec(&img, "OLD IMAGE");
         let mut o = self.opts(version, &img);
         o.env.appimage = Some(img.clone());
+        o.env.appdir = Some(self.home.clone());
         (o, img)
     }
 
@@ -328,7 +329,7 @@ fn package_command_is_pure() {
 #[test]
 fn escalation_failures_map_to_clear_errors() {
     // pkexec-style exit codes are only interpreted when the escalator is pkexec.
-    for (code, want) in [(126, ErrorCode::AuthCancelled), (127, ErrorCode::NeedsTerminal)] {
+    for (code, want) in [(126, ErrorCode::AuthCancelled), (127, ErrorCode::AuthFailed)] {
         let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], code, "");
         let pk = escalator(&p.r.tmp.path().join("pk"), "pkexec", &p.rec, code, "");
         let mut o = p.opts();
@@ -397,4 +398,99 @@ fn dialog_mode_without_an_agent_stops_before_downloading() {
     assert_eq!(e.code, ErrorCode::NeedsTerminal);
     assert_eq!(p.r.requested(&FakeServer::asset_path("v1.0.5", "fairfax-x86_64.pkg.tar.zst")), 0);
     assert!(p.argv().is_empty());
+}
+
+// ---- privileged programs come only from trusted directories ----
+
+#[test]
+fn privileged_programs_never_come_from_the_users_path() {
+    let r = rig();
+    let user_bin = r.tmp.path().join("user-bin");
+    let trusted = r.tmp.path().join("trusted");
+    shim(&user_bin, "pacman", 0);
+    shim(&user_bin, "pkexec", 0);
+    shim(&user_bin, "sudo", 0);
+    let file = Path::new("/tmp/x.pkg.tar.zst");
+
+    // A user-writable directory on PATH with a planted pacman: not used.
+    let mut env = env_with(&trusted, &r.home);
+    std::fs::create_dir_all(&trusted).unwrap();
+    env.path = OsString::from(&user_bin);
+    assert!(package_command(InstallKind::Pacman, file, &env).is_err());
+    assert!(env.which_trusted("pkexec").is_none() && env.which_trusted("sudo").is_none());
+
+    // The trusted one wins, as an absolute path.
+    shim(&trusted, "pacman", 0);
+    let c = package_command(InstallKind::Pacman, file, &env).unwrap();
+    assert_eq!(c[0], trusted.join("pacman").into_os_string());
+
+    // Empty and relative PATH entries never yield a relative program.
+    env.path = OsString::from(format!("/nonexistent-dir:{}:", "relative-bin"));
+    assert!(env.which("pacman").is_none());
+    env.trusted_dirs = vec![PathBuf::from("relative-bin"), PathBuf::new()];
+    assert!(package_command(InstallKind::Pacman, file, &env).is_err());
+    assert!(env.which_trusted("pacman").is_none());
+}
+
+#[test]
+fn trusted_programs_must_not_be_writable_by_others_or_owned_by_a_user() {
+    let r = rig();
+    let trusted = r.tmp.path().join("trusted");
+    let p = shim(&trusted, "pacman", 0);
+    let file = Path::new("/tmp/x.pkg.tar.zst");
+    let mut env = env_with(&trusted, &r.home);
+    assert!(package_command(InstallKind::Pacman, file, &env).is_ok());
+    for mode in [0o775, 0o757, 0o777] {
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(package_command(InstallKind::Pacman, file, &env).is_err(), "mode {mode:o}");
+    }
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Ownership is enforced outside tests: a file owned by an ordinary user is refused.
+    env.check_ownership = true;
+    use std::os::unix::fs::MetadataExt;
+    let owned_by_root = std::fs::metadata(&p).unwrap().uid() == 0;
+    assert_eq!(package_command(InstallKind::Pacman, file, &env).is_ok(), owned_by_root);
+}
+
+#[test]
+fn package_manager_gets_a_fixed_path_not_the_users() {
+    let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], 0, "");
+    let envfile = p.r.tmp.path().join("env.txt");
+    let esc = p.r.tmp.path().join("env-esc");
+    write_exec(&esc, &format!("#!/bin/sh\n/usr/bin/env > '{}'\nexit 0\n", envfile.display()));
+    let mut o = p.opts();
+    o.escalation = Some(vec![esc.into_os_string()]);
+    install(&o, &mut |_| {}).unwrap();
+    let env = std::fs::read_to_string(&envfile).unwrap();
+    assert!(env.lines().any(|l| l == "PATH=/usr/sbin:/usr/bin:/sbin:/bin"), "{env}");
+    assert!(!env.contains(p.r.bin.to_str().unwrap()), "the user's path never reaches the elevated command: {env}");
+}
+
+#[test]
+fn package_path_must_be_absolute_and_a_relative_tmpdir_is_ignored() {
+    let r = rig();
+    shim(&r.bin, "pacman", 0);
+    let env = env_with(&r.bin, &r.home);
+    let e = package_command(InstallKind::Pacman, Path::new("relative/x.pkg.tar.zst"), &env).unwrap_err();
+    assert_eq!(e.code, ErrorCode::InstallFailed);
+    use praeco::install::temp_base;
+    assert_eq!(temp_base(Some("relative/tmp".into())), PathBuf::from("/tmp"));
+    assert_eq!(temp_base(Some("".into())), PathBuf::from("/tmp"));
+    assert_eq!(temp_base(None), PathBuf::from("/tmp"));
+    assert_eq!(temp_base(Some("/var/tmp".into())), PathBuf::from("/var/tmp"));
+}
+
+#[test]
+fn forgejo_attachment_urls_work_when_listed() {
+    let r = rig();
+    let name = "fairfax-x86_64.AppImage";
+    r.server.route("/attachments/uuid-1", 200, &[], b"NEW".to_vec());
+    r.server.route("/attachments/uuid-2", 200, &[], format!("{}  {name}\n", sha256_hex(b"NEW")).into_bytes());
+    let mut rel = r.server.release("v1.0.5", "", &[name, &format!("{name}.sha256")]);
+    rel["assets"][0]["browser_download_url"] = json!(format!("{}/attachments/uuid-1", r.server.base));
+    rel["assets"][1]["browser_download_url"] = json!(format!("{}/attachments/uuid-2", r.server.base));
+    r.server.publish_releases(vec![rel]);
+    let (o, img) = r.appimage("1.0.5");
+    install(&o, &mut |_| {}).unwrap();
+    assert_eq!(std::fs::read_to_string(&img).unwrap(), "NEW");
 }

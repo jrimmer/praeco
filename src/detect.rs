@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fmt;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -48,12 +48,25 @@ impl fmt::Display for InstallKind {
     }
 }
 
+/// The only places privileged programs (pkexec, sudo, pacman, apt-get, dpkg,
+/// dnf, rpm) are looked for. Never the user's `PATH`.
+pub const TRUSTED_DIRS: [&str; 4] = ["/usr/bin", "/usr/sbin", "/bin", "/sbin"];
+
+/// The `PATH` handed to package managers and escalation commands.
+pub const TRUSTED_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+
 /// Everything praeco reads from the machine, gathered in one place so tests
 /// can substitute it (fake PATH with shim package managers, fake /proc, ...).
 #[derive(Debug, Clone)]
 pub struct Env {
-    /// Search path for package managers, pkexec, sudo and terminals.
+    /// The user's search path. Used only for unprivileged helpers (terminals);
+    /// only absolute entries count.
     pub path: OsString,
+    /// Where privileged programs may be found (see `TRUSTED_DIRS`). Tests point
+    /// this at a directory of shims.
+    pub trusted_dirs: Vec<PathBuf>,
+    /// Require trusted programs to be owned by root. Always true outside tests.
+    pub check_ownership: bool,
     /// `APPIMAGE`: the .AppImage file the app was started from.
     pub appimage: Option<PathBuf>,
     /// `APPDIR`: where an AppImage is mounted.
@@ -77,7 +90,20 @@ fn nonempty(v: Option<OsString>) -> Option<OsString> {
 impl Env {
     pub fn from_process() -> Env {
         let var = |k: &str| nonempty(std::env::var_os(k));
+        #[allow(unused_mut)]
+        let mut trusted_dirs: Vec<PathBuf> = TRUSTED_DIRS.iter().map(PathBuf::from).collect();
+        #[allow(unused_mut)]
+        let mut check_ownership = true;
+        // Test seam, compiled into debug builds only: release binaries cannot be
+        // pointed at other directories.
+        #[cfg(debug_assertions)]
+        if let Some(v) = var("PRAECO_TRUSTED_DIRS") {
+            trusted_dirs = std::env::split_paths(&v).collect();
+            check_ownership = false;
+        }
         Env {
+            trusted_dirs,
+            check_ownership,
             path: var("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
             appimage: var("APPIMAGE").map(PathBuf::from),
             appdir: var("APPDIR").map(PathBuf::from),
@@ -90,22 +116,36 @@ impl Env {
         }
     }
 
-    /// Resolve a program name against `self.path`.
+    /// Resolve an unprivileged helper (a terminal) against the user's `PATH`.
+    /// Empty and relative entries are ignored, so the result is always absolute.
     pub fn which(&self, prog: &str) -> Option<PathBuf> {
-        std::env::split_paths(&self.path).map(|d| d.join(prog)).find(|p| {
-            std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+        std::env::split_paths(&self.path)
+            .filter(|d| d.is_absolute())
+            .map(|d| d.join(prog))
+            .find(|p| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false))
+    }
+
+    /// Resolve a privileged program (pkexec, sudo, a package manager) from the
+    /// trusted directories only. The result is absolute, executable, not
+    /// writable by group or others, and (outside tests) owned by root.
+    pub fn which_trusted(&self, prog: &str) -> Option<PathBuf> {
+        self.trusted_dirs.iter().filter(|d| d.is_absolute()).map(|d| d.join(prog)).find(|p| {
+            let Ok(m) = std::fs::metadata(p) else { return false };
+            let mode = m.permissions().mode();
+            m.is_file() && mode & 0o111 != 0 && mode & 0o022 == 0 && (!self.check_ownership || m.uid() == 0)
         })
     }
 
     /// Run `prog args...` (found on `self.path`) and return the first line of
     /// stdout if it exited successfully.
     fn query(&self, prog: &str, args: &[&str], file: &Path) -> Option<String> {
-        let exe = self.which(prog)?;
+        let exe = self.which_trusted(prog)?;
         let out = Command::new(exe)
             .args(args)
             .arg(file)
+            .env_clear()
             .env("LC_ALL", "C")
-            .env("PATH", &self.path)
+            .env("PATH", TRUSTED_PATH)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
@@ -133,10 +173,9 @@ pub struct Detection {
 /// rpm, tarball under the user's home, otherwise unsupported.
 pub fn detect(env: &Env, exe: &Path) -> Detection {
     if let Some(img) = &env.appimage {
-        let inside = match &env.appdir {
-            Some(dir) => exe.starts_with(dir),
-            None => true,
-        };
+        // APPDIR must be known and contain the executable: a stray APPIMAGE
+        // variable alone says nothing about *this* app.
+        let inside = env.appdir.as_ref().is_some_and(|dir| exe.starts_with(dir));
         if inside && img.is_file() {
             return Detection {
                 kind: Some(InstallKind::AppImage),

@@ -2,6 +2,7 @@
 //! may be downloaded.
 
 use crate::error::{Error, ErrorCode, Result};
+use crate::release::Asset;
 use url::Url;
 
 pub const GITHUB_API: &str = "https://api.github.com";
@@ -40,9 +41,12 @@ pub fn is_loopback(url: &Url) -> bool {
     }
 }
 
-/// HTTPS only; plain HTTP is accepted solely for loopback addresses (tests, local mirrors).
-pub fn scheme_allowed(url: &Url) -> bool {
-    url.scheme() == "https" || (url.scheme() == "http" && is_loopback(url))
+/// HTTPS always; plain HTTP only to a loopback address, and only when
+/// `loopback_http` says the configured source itself is a loopback one (tests,
+/// local mirrors). A remote server can therefore never steer praeco to
+/// `http://127.0.0.1`.
+pub fn scheme_allowed(url: &Url, loopback_http: bool) -> bool {
+    url.scheme() == "https" || (loopback_http && url.scheme() == "http" && is_loopback(url))
 }
 
 impl Source {
@@ -59,10 +63,20 @@ impl Source {
     pub fn forgejo(base: &str, slug: &str) -> Result<Source> {
         let (owner, repo) = split_slug(slug)?;
         let url = Url::parse(base).map_err(|e| Error::new(ErrorCode::Usage, format!("'{base}' is not a valid URL: {e}")))?;
-        if !scheme_allowed(&url) {
+        if !scheme_allowed(&url, true) {
             return Err(Error::new(ErrorCode::Usage, "The Forgejo address must start with https://"));
         }
         Ok(Source { host: Host::Forgejo { base: base.trim_end_matches('/').to_string() }, owner, repo })
+    }
+
+    /// Is the configured source itself a plain-HTTP loopback address? Only then
+    /// may HTTP to loopback be used at all.
+    pub fn loopback_http(&self) -> bool {
+        let base = match &self.host {
+            Host::GitHub { api_base } => api_base,
+            Host::Forgejo { base } => base,
+        };
+        Url::parse(base).map(|u| u.scheme() == "http" && is_loopback(&u)).unwrap_or(false)
     }
 
     pub fn releases_url(&self) -> String {
@@ -88,11 +102,13 @@ impl Source {
         }
     }
 
-    /// May this URL, taken from the release's asset list, be downloaded? It must
-    /// be HTTPS (or loopback HTTP), on the source's own host, and under that
-    /// repository's release-download path.
-    pub fn allows_download(&self, url: &Url) -> bool {
-        if !scheme_allowed(url) {
+    /// May this URL be downloaded? It must be HTTPS (or loopback HTTP for a
+    /// loopback source), on the source's own host, and under that repository's
+    /// release-download path. Forgejo's legacy `/attachments/<id>` URLs are
+    /// accepted only when `listed` (the release's own asset list) names that
+    /// exact URL.
+    pub fn allows_download(&self, url: &Url, listed: &[Asset]) -> bool {
+        if !scheme_allowed(url, self.loopback_http()) {
             return false;
         }
         let slug = format!("/{}/{}/releases/download/", self.owner, self.repo).to_lowercase();
@@ -103,7 +119,7 @@ impl Source {
             }
             Host::GitHub { api_base } => {
                 let Ok(b) = Url::parse(api_base) else { return false };
-                same_origin(&b, url) && path.contains(&slug)
+                same_origin(&b, url) && path.starts_with(&slug)
             }
             Host::Forgejo { base } => {
                 let Ok(b) = Url::parse(base) else { return false };
@@ -111,7 +127,12 @@ impl Source {
                     return false;
                 }
                 let prefix = b.path().trim_end_matches('/').to_lowercase();
-                path.starts_with(&format!("{prefix}{slug}")) || path.starts_with(&format!("{prefix}/attachments/"))
+                if path.starts_with(&format!("{prefix}{slug}")) {
+                    return true;
+                }
+                let attach = format!("{prefix}/attachments/");
+                let single_segment = url.path().to_lowercase().strip_prefix(&attach).is_some_and(|r| !r.is_empty() && !r.contains('/'));
+                single_segment && listed.iter().any(|a| a.url == url.as_str())
             }
         }
     }
@@ -150,20 +171,53 @@ mod tests {
     #[test]
     fn github_download_rules() {
         let g = Source::github("jrimmer/fairfax").unwrap();
-        assert!(g.allows_download(&u("https://github.com/jrimmer/fairfax/releases/download/v1/a.deb")));
-        assert!(g.allows_download(&u("https://github.com/JRimmer/Fairfax/releases/download/v1/a.deb")));
-        assert!(!g.allows_download(&u("https://github.com/evil/fairfax/releases/download/v1/a.deb")));
-        assert!(!g.allows_download(&u("https://evil.com/jrimmer/fairfax/releases/download/v1/a.deb")));
-        assert!(!g.allows_download(&u("http://github.com/jrimmer/fairfax/releases/download/v1/a.deb")));
-        assert!(!g.allows_download(&u("https://github.com/jrimmer/fairfax/archive/v1.tar.gz")));
+        let ok = |s: &str| g.allows_download(&u(s), &[]);
+        assert!(ok("https://github.com/jrimmer/fairfax/releases/download/v1/a.deb"));
+        assert!(ok("https://github.com/JRimmer/Fairfax/releases/download/v1/a.deb"));
+        assert!(!ok("https://github.com/evil/fairfax/releases/download/v1/a.deb"));
+        assert!(!ok("https://evil.com/jrimmer/fairfax/releases/download/v1/a.deb"));
+        assert!(!ok("http://github.com/jrimmer/fairfax/releases/download/v1/a.deb"));
+        assert!(!ok("https://github.com/jrimmer/fairfax/archive/v1.tar.gz"));
     }
 
     #[test]
     fn forgejo_download_rules() {
         let f = Source::forgejo("https://code.example.com", "o/r").unwrap();
-        assert!(f.allows_download(&u("https://code.example.com/o/r/releases/download/v1/a.deb")));
-        assert!(f.allows_download(&u("https://code.example.com/attachments/abc-123")));
-        assert!(!f.allows_download(&u("https://code.example.com/x/y/releases/download/v1/a.deb")));
-        assert!(!f.allows_download(&u("https://other.example.com/o/r/releases/download/v1/a.deb")));
+        let ok = |s: &str| f.allows_download(&u(s), &[]);
+        assert!(ok("https://code.example.com/o/r/releases/download/v1/a.deb"));
+        assert!(!ok("https://code.example.com/x/y/releases/download/v1/a.deb"));
+        assert!(!ok("https://other.example.com/o/r/releases/download/v1/a.deb"));
+    }
+
+    #[test]
+    fn forgejo_attachments_only_when_listed_exactly() {
+        let f = Source::forgejo("https://code.example.com", "o/r").unwrap();
+        let url = "https://code.example.com/attachments/abc-123";
+        let listed = [Asset { name: "a.deb".into(), url: url.into(), size: 1 }];
+        assert!(f.allows_download(&u(url), &listed));
+        assert!(!f.allows_download(&u(url), &[]), "any /attachments/ URL on the host is not enough");
+        assert!(!f.allows_download(&u("https://code.example.com/attachments/other"), &listed));
+        assert!(!f.allows_download(&u("https://code.example.com/attachments/abc-123/extra"), &listed));
+    }
+
+    #[test]
+    fn github_enterprise_prefix_is_anchored() {
+        let g = Source::github_with_api_base("o/r", "https://ghe.example.com/api/v3").unwrap();
+        assert!(g.allows_download(&u("https://ghe.example.com/o/r/releases/download/v1/a"), &[]));
+        assert!(!g.allows_download(&u("https://ghe.example.com/evil/x/o/r/releases/download/v1/a"), &[]));
+        assert!(!g.allows_download(&u("https://ghe.example.com/uploads/o/r/releases/download/v1/a"), &[]));
+    }
+
+    #[test]
+    fn loopback_http_only_for_loopback_sources() {
+        let lo = u("http://127.0.0.1:9/x");
+        assert!(!scheme_allowed(&lo, false), "a remote source's redirect to loopback is refused");
+        assert!(scheme_allowed(&lo, true));
+        assert!(!scheme_allowed(&u("http://example.com/"), true));
+        assert!(Source::forgejo("http://127.0.0.1:3000", "o/r").unwrap().loopback_http());
+        assert!(!Source::forgejo("https://code.example.com", "o/r").unwrap().loopback_http());
+        assert!(!Source::github("o/r").unwrap().loopback_http());
+        let remote = Source::forgejo("https://code.example.com", "o/r").unwrap();
+        assert!(!remote.allows_download(&u("http://127.0.0.1:9/o/r/releases/download/v1/a"), &[]));
     }
 }

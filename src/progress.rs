@@ -20,6 +20,9 @@ pub enum Event {
     /// Dialog mode cannot work here; run again with `--mode terminal`.
     NeedsTerminal { message: String },
     TerminalOpened { terminal: String },
+    /// `--detach`: the update continues in a background process that writes
+    /// its events to `progress_file`.
+    Detached { progress_file: String },
     /// Last event of a failed run.
     Error { code: String, message: String },
     /// Internal: first line the in-terminal worker writes to its events file.
@@ -46,7 +49,7 @@ impl Event {
             Event::Restarting { message } => message.clone(),
             Event::Done { .. } => "All done.".to_string(),
             Event::NeedsTerminal { message } => message.clone(),
-            Event::TerminalOpened { .. } | Event::Hello { .. } => return None,
+            Event::TerminalOpened { .. } | Event::Hello { .. } | Event::Detached { .. } => return None,
             Event::Error { message, .. } => format!("Something went wrong: {message}"),
         })
     }

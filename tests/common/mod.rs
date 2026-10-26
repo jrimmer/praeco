@@ -211,6 +211,8 @@ pub fn recorded(rec: &Path) -> Vec<String> {
 pub fn env_with(path_dir: &Path, home: &Path) -> Env {
     Env {
         path: OsString::from(path_dir),
+        trusted_dirs: vec![path_dir.to_path_buf()],
+        check_ownership: false,
         appimage: None,
         appdir: None,
         home: Some(home.to_path_buf()),

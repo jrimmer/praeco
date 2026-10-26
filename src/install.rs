@@ -4,7 +4,7 @@
 
 use crate::assets::{self, AssetPatterns};
 use crate::check::fetch_releases;
-use crate::detect::{self, Detection, Env, InstallKind};
+use crate::detect::{self, Detection, Env, InstallKind, TRUSTED_PATH};
 use crate::error::{Error, ErrorCode, Result};
 use crate::files;
 use crate::http::Http;
@@ -87,7 +87,8 @@ pub fn find_release<'a>(releases: &'a [Release], want: &str) -> Result<&'a Relea
 /// - rpm:    `dnf install -y <file>` (resolves dependencies); `rpm -U <file>`
 ///   when dnf is not installed
 ///
-/// The program is resolved to an absolute path on `env.path`.
+/// The program is resolved to an absolute path in `env.trusted_dirs`
+/// (`/usr/bin`, `/usr/sbin`, `/bin`, `/sbin`), never from the user's `PATH`.
 pub fn package_command(kind: InstallKind, file: &Path, env: &Env) -> Result<Vec<OsString>> {
     let (candidates, args): (&[(&str, &[&str])], &str) = match kind {
         InstallKind::Pacman => (&[("pacman", &["-U", "--noconfirm"])], "pacman"),
@@ -95,8 +96,11 @@ pub fn package_command(kind: InstallKind, file: &Path, env: &Env) -> Result<Vec<
         InstallKind::Rpm => (&[("dnf", &["install", "-y"]), ("rpm", &["-U"])], "dnf or rpm"),
         _ => return Err(Error::new(ErrorCode::InstallFailed, format!("{kind} is not a package"))),
     };
+    if !file.is_absolute() {
+        return Err(Error::new(ErrorCode::InstallFailed, "Internal error: the package path is not absolute"));
+    }
     for (prog, a) in candidates {
-        if let Some(path) = env.which(prog) {
+        if let Some(path) = env.which_trusted(prog) {
             let mut v: Vec<OsString> = vec![path.into_os_string()];
             v.extend(a.iter().map(OsString::from));
             v.push(file.as_os_str().to_os_string());
@@ -123,7 +127,7 @@ pub fn resolve_escalation(opts: &InstallOptions) -> Result<Vec<OsString>> {
     let nt = |m: &str| Err(Error::new(ErrorCode::NeedsTerminal, m));
     match opts.mode {
         Mode::Dialog => {
-            let Some(pkexec) = opts.env.which("pkexec") else {
+            let Some(pkexec) = opts.env.which_trusted("pkexec") else {
                 return nt("This computer has no graphical permission prompt (pkexec is not installed). Continue in a terminal.");
             };
             if !opts.env.graphical {
@@ -134,7 +138,7 @@ pub fn resolve_escalation(opts: &InstallOptions) -> Result<Vec<OsString>> {
             }
             Ok(vec![pkexec.into_os_string()])
         }
-        Mode::Terminal => match opts.env.which("sudo") {
+        Mode::Terminal => match opts.env.which_trusted("sudo") {
             Some(s) => Ok(vec![s.into_os_string()]),
             None => Err(Error::new(ErrorCode::InstallFailed, "sudo is not installed, so praeco cannot get administrator rights")),
         },
@@ -147,12 +151,16 @@ fn tail_lines(bytes: &[u8]) -> String {
     lines[lines.len().saturating_sub(4)..].join(" / ")
 }
 
-fn run_elevated(escalation: &[OsString], cmd: &[OsString], interactive: bool, env: &Env) -> Result<()> {
+fn run_elevated(escalation: &[OsString], cmd: &[OsString], interactive: bool) -> Result<()> {
     let mut argv: Vec<&OsString> = escalation.iter().collect();
     argv.extend(cmd.iter());
     let via_pkexec = escalation.first().and_then(|p| Path::new(p).file_name()).is_some_and(|n| n == "pkexec");
     let mut c = Command::new(argv[0]);
-    c.args(&argv[1..]).env("PATH", &env.path).env("LC_ALL", "C");
+    // A fixed environment: the user's PATH and variables never reach a privileged program.
+    c.args(&argv[1..]).env_clear().env("PATH", TRUSTED_PATH).env("LC_ALL", "C");
+    if let Some(term) = std::env::var_os("TERM") {
+        c.env("TERM", term);
+    }
     let spawn_err = |e: std::io::Error| Error::new(ErrorCode::InstallFailed, format!("Could not start {}: {e}", argv[0].to_string_lossy()));
     let (status, detail) = if interactive {
         (c.status().map_err(spawn_err)?, String::new())
@@ -168,8 +176,11 @@ fn run_elevated(escalation: &[OsString], cmd: &[OsString], interactive: bool, en
         return Ok(());
     }
     match status.code() {
-        Some(126) if via_pkexec => Err(Error::new(ErrorCode::AuthCancelled, "The permission prompt was dismissed or the password was refused. Nothing was installed.")),
-        Some(127) if via_pkexec => Err(Error::new(ErrorCode::NeedsTerminal, "The permission prompt could not be shown. Continue in a terminal.")),
+        // 126: the prompt was dismissed or the user is not authorised. 127: the
+        // authentication did not complete (wrong password, no agent after all).
+        // The up-front agent check already sent "no agent" to the terminal path.
+        Some(126) if via_pkexec => Err(Error::new(ErrorCode::AuthCancelled, "The permission prompt was dismissed, or this account is not allowed to install software. Nothing was installed.")),
+        Some(127) if via_pkexec => Err(Error::new(ErrorCode::AuthFailed, "The administrator password was not accepted, or the permission prompt could not finish. Nothing was installed. You can try again or install in a terminal.")),
         code => {
             let code = code.map(|c| format!("exit status {c}")).unwrap_or_else(|| "killed by a signal".into());
             let more = if detail.is_empty() { String::new() } else { format!(": {detail}") };
@@ -188,15 +199,26 @@ fn plain_kind(kind: InstallKind) -> &'static str {
     }
 }
 
+/// Where private temp directories go: `$TMPDIR` if it is an absolute path,
+/// else `/tmp`. A relative `TMPDIR` is ignored.
+pub fn temp_base(tmpdir: Option<OsString>) -> PathBuf {
+    match tmpdir.map(PathBuf::from) {
+        Some(p) if p.is_absolute() => p,
+        _ => PathBuf::from("/tmp"),
+    }
+}
+
 fn private_dir() -> Result<tempfile::TempDir> {
-    Ok(tempfile::Builder::new().prefix("praeco-").tempdir()?)
+    let base = temp_base(std::env::var_os("TMPDIR"));
+    let base = std::fs::canonicalize(&base).unwrap_or(base);
+    Ok(tempfile::Builder::new().prefix("praeco-").tempdir_in(base)?)
 }
 
 /// Run the whole pipeline. Emits `resolving`, `downloading`, `verifying`,
 /// `installing`, `installed`; errors are returned for the caller to report
 /// (the CLI turns them into `error` / `needs_terminal` events).
 pub fn install(opts: &InstallOptions, emit: &mut dyn FnMut(&Event)) -> Result<Installed> {
-    install_with(&Http::new(), opts, emit)
+    install_with(&Http::for_source(&opts.source), opts, emit)
 }
 
 pub fn install_with(http: &Http, opts: &InstallOptions, emit: &mut dyn FnMut(&Event)) -> Result<Installed> {
@@ -223,7 +245,7 @@ pub fn install_with(http: &Http, opts: &InstallOptions, emit: &mut dyn FnMut(&Ev
     let escalation = if kind.needs_root() { resolve_escalation(opts)? } else { Vec::new() };
 
     let dir = private_dir()?;
-    let file = verify::download(http, &opts.source, asset, dir.path(), &mut |bytes, total| {
+    let file = verify::download(http, &opts.source, release, asset, dir.path(), &mut |bytes, total| {
         emit(&Event::Downloading { asset: asset.name.clone(), bytes, total });
     })?;
     emit(&Event::Verifying { asset: asset.name.clone() });
@@ -239,7 +261,7 @@ pub fn install_with(http: &Http, opts: &InstallOptions, emit: &mut dyn FnMut(&Ev
             }
             let who = if escalation.is_empty() { "" } else { " Administrator permission is needed." };
             emit(&Event::Installing { kind, message: format!("Installing the {}.{who}", plain_kind(kind)) });
-            run_elevated(&escalation, &cmd, opts.in_terminal, &opts.env)?;
+            run_elevated(&escalation, &cmd, opts.in_terminal)?;
         }
         InstallKind::AppImage => {
             emit(&Event::Installing { kind, message: format!("Replacing {} with the new version.", det.target.display()) });
@@ -247,7 +269,7 @@ pub fn install_with(http: &Http, opts: &InstallOptions, emit: &mut dyn FnMut(&Ev
         }
         InstallKind::Tarball => {
             emit(&Event::Installing { kind, message: format!("Unpacking the new version over {}.", det.target.display()) });
-            files::install_tarball(&file, &det.target)?;
+            files::install_tarball(&file, &det.target, opts.env.home.as_deref().unwrap_or(Path::new("/")))?;
         }
     }
     let done = Installed { version, kind };

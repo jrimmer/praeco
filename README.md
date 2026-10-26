@@ -37,7 +37,9 @@ praeco check --forgejo https://code.example.com owner/repo --current 1.0.4 --jso
    **every** release newer than the running one, newest first, each with its notes.
    The notes are the release body with the install boilerplate cut off at the first
    line that starts with the marker (default `## Install`; `--marker` changes it,
-   `--marker ''` keeps whole bodies).
+   `--marker ''` keeps whole bodies). The marker must be a whole heading: the line
+   starts with it and it is followed by nothing or whitespace, so `## Install` and
+   `## Install (Linux)` cut, `## Installer fixes` does not.
 2. **Detect** how the app was installed from its executable path and the
    environment (see below).
 3. **Download** the matching asset into a private (`0700`) temporary directory.
@@ -107,14 +109,16 @@ Options for all commands:
 | `--restart-pid PID` | The app's PID: it is sent SIGTERM and awaited before relaunch |
 | `--restart -- CMD ARGS...` | The command line that starts the new version. Everything after `--` belongs to it, so it must come last. Without `--restart-pid`, the command is just started. |
 | `--restart-timeout SECS` | How long to wait for the app to quit (default 30) |
+| `--detach` | Continue in a background process (new session) and return at once. See [Launching praeco from an app](#launching-praeco-from-an-app). |
+| `--progress-file PATH` | With `--detach`: where the background process writes its JSON lines. Must not exist yet; created `0600` (exclusively, never through a symlink) in a directory that is yours and not writable by others. Default: a new private (`0700`) temporary directory; the path is in the `detached` event. |
 
 Output of `install` is JSON lines on stdout, one event per line, flushed as it
 happens. A closed pipe never kills praeco, which matters when the app quits
 mid-restart.
 
-Environment: `PRAECO_ESCALATION_CMD` replaces `pkexec`/`sudo` with another command
-(whitespace-separated argv placed in front of the package manager); see
-[Security](#security).
+Environment: `PRAECO_TOKEN` (see above). Debug builds, which the tests use, also read
+`PRAECO_TRUSTED_DIRS` and `PRAECO_ESCALATION_CMD`; release builds ignore both (see
+[Security](#security)).
 
 ### Exit codes
 
@@ -201,8 +205,8 @@ Failure (exit code 1: offline, rate limit, bad response, ...):
 
 Error codes: `usage`, `invalid_version`, `network`, `rate_limited`, `api`,
 `no_release`, `no_asset`, `unsupported`, `checksum_missing`, `checksum_mismatch`,
-`download`, `needs_terminal`, `auth_cancelled`, `install_failed`, `terminal_closed`,
-`restart_failed`, `io`. Messages are plain language and can be shown to a user as is.
+`download`, `needs_terminal`, `auth_cancelled`, `auth_failed`, `install_failed`,
+`terminal_closed`, `restart_failed`, `io`. Messages are plain language and can be shown to a user as is.
 
 ### `detect`
 
@@ -237,6 +241,7 @@ A successful dialog-mode install with a restart:
 | `restarting` | `message` | Only with `--restart`; two events (closing, starting) |
 | `done` | `version`, `restarted` | Last event of a success |
 | `terminal_opened` | `terminal` | Terminal mode only: first event, which terminal was started |
+| `detached` | `progress_file` | `--detach` only: the only line printed on stdout; the other events go to that file |
 | `needs_terminal` | `message` | Last event, exit code 3: retry with `--mode terminal` |
 | `error` | `code`, `message` | Last event of a failure; the exit code follows the table above |
 
@@ -259,14 +264,15 @@ Detection looks at the executable path (`--exe`) and the environment, in this or
 
 | Order | Test | Kind | Default asset pattern |
 | --- | --- | --- | --- |
-| 1 | `APPIMAGE` (or `--appimage`) names an existing file, and the executable is under `APPDIR` when that is set | `appimage` | `*.AppImage` |
+| 1 | `APPIMAGE` (or `--appimage`) names an existing file, and `APPDIR` (or `--appdir`) is set and contains the executable | `appimage` | `*.AppImage` |
 | 2 | `pacman -Qo <exe>` succeeds | `pacman` | `*.pkg.tar.zst` |
 | 3 | `dpkg -S <exe>` succeeds | `deb` | `*.deb` |
 | 4 | `rpm -qf <exe>` succeeds | `rpm` | `*.rpm` |
 | 5 | the executable lives under the user's home | `tarball` | `*.tar.gz` |
 | 6 | anything else | `unsupported` (a source build), with a reason | none |
 
-The package queries are tried on the path as given and on its symlink-resolved path.
+The package queries (run from the trusted directories only, see below) are tried on the
+path as given and on its symlink-resolved path.
 A build you compiled yourself under your home folder is indistinguishable from a
 tarball install and is treated as one.
 
@@ -279,8 +285,13 @@ architecture beats one that mentions none. Fairfax's assets
 `--asset-pattern 'deb=myapp_*_{arch}.deb'`.
 
 The commands that run **elevated**, always on the verified local file in the private
-temp directory, never a script (`<file>` is its absolute path; the program is
-resolved to an absolute path first):
+temp directory, never a script (`<file>` is its absolute path, in a canonical
+`$TMPDIR` or `/tmp`, a relative `TMPDIR` being ignored). Programs (`pkexec`, `sudo`,
+`pacman`, `apt-get`, `dpkg`, `dnf`, `rpm`) are looked up only in `/usr/bin`,
+`/usr/sbin`, `/bin` and `/sbin`, never in the user's `PATH`; each must be an
+absolute, executable path that is owned by root and not writable by group or others.
+The elevated command runs with a cleared environment and
+`PATH=/usr/sbin:/usr/bin:/sbin:/bin`:
 
 | Kind | Elevated command |
 | --- | --- |
@@ -298,7 +309,9 @@ used "unsandboxed"; that is expected for a local file and harmless.
 
 No root is involved for the other two kinds:
 
-- **AppImage**: the file is written beside the old one (hidden name, same directory),
+- **AppImage**: the destination is resolved through symlinks first (a symlinked
+  AppImage is updated at its real path and the link stays a link). The file is written
+  beside the old one (hidden name, same directory),
   fsynced, given the old file's mode (the owner execute bit is guaranteed), and
   renamed over it; the directory is fsynced too. A running AppImage keeps working
   from the old file until it exits. If anything fails the old file is untouched and
@@ -308,9 +321,16 @@ No root is involved for the other two kinds:
   suffix in the archive is dropped, and everything above it in the installed path is
   the install root. For `~/.local/opt/fairfax/bin/fairfax` and an archive holding
   `fairfax-1.0.5/bin/fairfax`, the root is `~/.local/opt/fairfax` and the
-  `fairfax-1.0.5/` prefix is stripped. The archive is extracted into a private staging
+  `fairfax-1.0.5/` prefix is stripped. The root is never `/`, your home folder or any
+  parent of it, nor a hidden folder directly in your home folder other than `~/.local`:
+  if the match would put it there (an archive unpacked straight into `~`, so the app
+  lives in `~/fairfax-1.0/lib/fairfax/fairfax`), the root moves down to the archive's
+  own top folder (`~/fairfax-1.0`). Every entry must lie below the archive prefix; an
+  entry outside it (a `.bashrc` at the top of the archive) is an error and nothing is
+  installed. The archive is extracted into a private staging
   directory inside the root (same file system), refusing absolute paths, `..`, hard
-  links, devices and symlinks that point outside their tree; then each file is
+  links, devices and symlinks that point outside their tree, more than 100,000 entries
+  and more than 2 GiB in total (decompression bombs); then each file is
   renamed over its destination. Each rename is atomic, so a running program never
   sees a half-written file; the tree as a whole is not one transaction. Files in the
   install that are not in the archive are left alone (nothing is deleted).
@@ -330,8 +350,10 @@ all of these hold:
    count), or a shell that embeds an agent (`gnome-shell`, `cinnamon`, `cosmic-osd`).
 
 Item 3 is a heuristic. If it guesses wrong and `pkexec` still cannot show a prompt, it
-exits 127, which praeco also turns into `needs_terminal`; exit 126 (dismissed or
-refused) becomes `auth_cancelled`. When praeco already runs as root none of this is
+exits 127 or 126 afterwards, those are not "no agent" (that case is decided up front)
+and do not trigger the terminal fallback: 126 (dismissed, or not allowed to install)
+becomes `auth_cancelled`, and 127 (password not accepted, or the prompt could not
+finish) becomes `auth_failed`, each with a plain message. When praeco already runs as root none of this is
 needed. AppImage and tarball installs need no rights and never fall back.
 
 The app's job on `needs_terminal` is to run the same `praeco install ...` again with
@@ -342,7 +364,9 @@ terminal, doing the same steps with `sudo` instead of `pkexec`, and shows plain
 language progress. On failure it waits for Enter so the message can be read. The
 terminal is chosen as: `xdg-terminal-exec`, then `$TERMINAL`, then the first found of
 foot, kitty, alacritty, ghostty, wezterm, gnome-terminal, konsole, xfce4-terminal,
-tilix, terminator, lxterminal, x-terminal-emulator, urxvt, xterm. The terminal
+terminator, x-terminal-emulator, urxvt, xterm. Terminals that re-split their command as
+one string (tilix, lxterminal) are never used, because a path with spaces would break;
+the command is always handed over as separate arguments. The terminal
 process and the original praeco talk through an events file in a private temp
 directory; the original relays the worker's events to stdout as JSON lines. If the
 window is closed before the update finishes, the result is `terminal_closed`. The
@@ -362,7 +386,10 @@ With `--restart-pid N --restart -- COMMAND...`, after a successful install praec
 2. starts `COMMAND...` fully detached: a new session (`setsid`), no controlling
    terminal, stdio on `/dev/null`, not through a shell. It survives praeco exiting
    and the terminal closing. The AppImage variables `APPIMAGE`, `APPDIR`, `ARGV0` and
-   `OWD` are removed from its environment, since they describe the old mount;
+   `OWD` are removed from its environment, since they describe the old mount, and so are
+   entries pointing into that mount (`/tmp/.mount_*` or under `APPDIR`) in
+   `LD_LIBRARY_PATH`, `QT_PLUGIN_PATH`, `QML2_IMPORT_PATH`, `PATH` and `XDG_DATA_DIRS`
+   (a variable left empty is removed);
 3. exits.
 
 `N` must be a real process other than praeco and init. praeco ignores `SIGHUP`
@@ -370,9 +397,67 @@ during an install so a closing terminal does not interrupt a package manager.
 
 The app is told to quit with a signal, so it should handle `SIGTERM` by quitting
 cleanly (a Qt app can install a handler that calls `QCoreApplication::quit()`).
-Start praeco with `QProcess::startDetached`, or otherwise make sure the app's exit
-does not take praeco down with it: if praeco is a plain child that the app kills on
-exit, nobody is left to start the new version.
+
+### Launching praeco from an app
+
+praeco must keep running after the app quits, because it starts the new version. A plain
+child process of the app may be killed with it, and a process started with
+`QProcess::startDetached` has no stdout to read. So use `--detach`:
+
+```
+praeco install SOURCE --version V --exe PATH --restart-pid PID --detach \
+       --progress-file /run/user/1000/fairfax/update-1.jsonl --restart -- /usr/bin/fairfax
+```
+
+`--detach` makes praeco start a second copy of itself in a new session (`setsid`, no
+terminal, stdin and stderr on `/dev/null`, stdout going to the progress file) and return
+at once. The copy installs and restarts as usual and writes the same JSON lines to the
+progress file; it survives the app's exit. The progress file must not exist yet; praeco
+creates it `0600`, exclusively and never through a symlink, in a directory that must
+belong to you and not be writable by others (so not `/tmp` itself). Without
+`--progress-file` praeco makes a private temporary directory and the path is printed in
+the one line it writes to stdout:
+
+```
+{"event":"detached","progress_file":"/tmp/praeco-progress-Ab3dEf/progress.jsonl"}
+```
+
+The exit code of the detached run is not available; its last line says how it ended
+(`done`, `needs_terminal` or `error`).
+
+If praeco itself is inside the app's AppImage mount (under `APPDIR` or `/tmp/.mount_*`),
+that mount disappears when the app quits. With `--detach` or `--restart`, praeco first
+copies itself to a private temporary directory, continues from the copy, and removes the
+copy when done. Where possible, ship praeco outside the mount (install it as its own
+package) and skip the copy.
+
+**Qt (Fairfax), the one pattern to use:**
+
+```cpp
+const QString dir  = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/fairfax";
+QDir().mkpath(dir);                                   // yours, mode 0700
+QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+const QString progress = dir + "/update-" + QUuid::createUuid().toString(QUuid::Id128) + ".jsonl";
+
+QStringList args = {"install", "--github", "jrimmer/fairfax", "--version", latest,
+                    "--exe", QCoreApplication::applicationFilePath(),
+                    "--restart-pid", QString::number(QCoreApplication::applicationPid()),
+                    "--detach", "--progress-file", progress,
+                    "--restart", "--", QCoreApplication::applicationFilePath()};
+QProcess::startDetached("praeco", args);
+
+// Then tail the file with a 200 ms QTimer: remember the read offset, read new
+// complete lines, QJsonDocument::fromJson each one. Stop at "done", "error" or
+// "needs_terminal". On "needs_terminal" run the same command again with
+// "--mode terminal" and a new progress file.
+```
+
+The app keeps running while the update downloads and installs; it quits only when praeco
+sends `SIGTERM`, and the new version starts from the detached copy.
+
+**Rust (casabon2):** call the library in-process, as shown below, or use the same CLI
+command with `std::process::Command::new("praeco").args(...).spawn()` and tail the
+progress file the same way. The library path needs no file.
 
 ## Using praeco from an app
 
@@ -392,14 +477,13 @@ Show the pill only when `update_available` is true and `latest` is not the versi
 the user chose to skip. Use `install.supported` to decide whether the sheet offers
 **Install** or only a link to `releases[0].url`.
 
-To install, run `praeco install` with `--version` set to the `latest` from the check,
-`--exe`, and the restart arguments: `--restart-pid` is
-`QCoreApplication::applicationPid()`, and the command after `--restart --` is
-`applicationFilePath()` plus its arguments (for an AppImage, the `APPIMAGE` path).
-Read stdout line by line and drive a progress bar from `downloading`
-(`bytes`/`total`). On `needs_terminal`, run the same command again with
-`--mode terminal`. Let SIGTERM quit the app cleanly when the restart comes, and show
-`message` text as is.
+To install, run `praeco install --detach` as described in
+[Launching praeco from an app](#launching-praeco-from-an-app) with `--version` set to the
+`latest` from the check, and drive a progress bar from the `downloading` events
+(`bytes`/`total`) in the progress file. The command after `--restart --` is
+`applicationFilePath()` plus its arguments (for an AppImage, the `APPIMAGE` path). On
+`needs_terminal`, run the same command again with `--mode terminal`. Let SIGTERM quit the
+app cleanly when the restart comes, and show `message` text as is.
 
 ### casabon2 (Rust/gpui): use the library
 
@@ -420,9 +504,12 @@ let restart = RestartSpec::new(Some(std::process::id()), vec![exe.into()]);
 praeco::update(&opts, Some(&restart), &mut |event| { /* forward to the UI */ })?;
 ```
 
-`praeco::update` sends `SIGTERM` to the PID in the `RestartSpec`. An app that wants
-to do its own shutdown can instead pass `None` as the PID, or call `praeco::install`
-alone, then quit and relaunch with `praeco::restart::launch_detached`.
+`praeco::update` sends `SIGTERM` to the PID in the `RestartSpec`, which is your own
+process here, so use it from a process that can survive that (or handle `SIGTERM`
+gracefully). An app that wants to do its own shutdown can instead pass `None` as the PID,
+or call `praeco::install` alone, then quit and relaunch with
+`praeco::restart::launch_detached`. If the app itself must exit for the new version to
+start and cannot outlive the update, use the CLI with `--detach` instead.
 Terminal mode starts the `praeco` executable inside a terminal (it locates itself
 with `std::env::current_exe`), so a library user that wants the terminal fallback
 should ship the `praeco` binary and run the CLI for that case.
@@ -462,12 +549,16 @@ prints.
 What is trusted:
 
 - **HTTPS to the release source.** Certificates are checked against the bundled
-  Mozilla root set (rustls with `webpki-roots`); HTTP is refused except on loopback.
-  Redirects are followed by hand, one hop at a time, and every hop must be HTTPS.
+  Mozilla root set (rustls with `webpki-roots`). HTTP is refused, except to a loopback
+  address when the configured source is itself a loopback HTTP address (tests, local
+  mirrors): a remote server cannot redirect praeco to `http://127.0.0.1`. Redirects are
+  followed by hand, one hop at a time, and every hop must be HTTPS.
 - **The repository's release.** The release list from the configured source says
   which files exist. Only URLs from that asset list are downloaded, and they must be
   HTTPS URLs on the source's own host under that repository's release-download path
-  (GitHub's CDN redirects are followed from there). A release that lists an asset
+  (`/owner/repo/releases/download/`, anchored at the start of the path; Forgejo's
+  legacy `/attachments/<id>` URLs only when that exact URL is in the release's asset
+  list; GitHub's CDN redirects are followed from there). A release that lists an asset
   anywhere else is refused before any request is made.
 - **The checksum published with the release.** The file must match every checksum
   source that mentions it (`<asset>.sha256`, `SHA256SUMS`), and at least one must
@@ -488,17 +579,25 @@ Privilege handling:
   never runs as root unless you start it that way. The elevated process is
   `pacman`, `apt-get`/`dpkg` or `dnf`/`rpm` with the arguments listed above. praeco
   never executes anything it downloaded, and never runs a script or a shell.
+- **Privileged programs are not looked up on the user's `PATH`.** `pkexec`, `sudo` and
+  the package managers come from `/usr/bin`, `/usr/sbin`, `/bin` and `/sbin` only, as
+  absolute paths of files owned by root and not writable by group or others, and run
+  with a cleared environment and a fixed `PATH`. A `pacman` or `sudo` planted in
+  `~/.local/bin` (or reached through an empty `PATH` entry) is never used. The only way to
+  change this is the `PRAECO_TRUSTED_DIRS` variable, which exists in debug builds only.
 - Right before handing the file to the elevated command, praeco hashes it again and
   refuses to continue if it changed since verification. The file lives in a `0700`
   directory only the user can write to; a process already running as the same user
   could still swap it in the last instant, which is the limit of what a user-owned
   file can promise.
 - Downloads go to a fresh private temp directory that is removed afterwards.
-- AppImage and tarball installs run as the user and write only inside the existing
-  install location.
-- `PRAECO_ESCALATION_CMD` replaces the `pkexec`/`sudo` prefix. It is for tests and
-  unusual setups (`doas`). It is read from the environment of the user who runs
-  praeco, so it grants nothing that user did not already have.
+- AppImage installs run as the user and replace one file: the AppImage itself (at its
+  real path). Tarball installs run as the user and write only below the app's own
+  folder, which is never your home folder, its parents, or `/`; entries outside it,
+  unsafe paths, and decompression bombs are refused (details above).
+- `PRAECO_ESCALATION_CMD` (replaces the `pkexec`/`sudo` prefix) and
+  `PRAECO_TRUSTED_DIRS` exist only in debug builds, for the test suite. Release builds
+  ignore them.
 - An optional API token is sent only to the API host and is never put on a command
   line.
 

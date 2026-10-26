@@ -106,7 +106,7 @@ pub fn evaluate(source_label: &str, releases: &[Release], current: &Version, cur
 }
 
 pub fn check(opts: &CheckOptions) -> Result<CheckResult> {
-    check_with(&Http::new(), opts)
+    check_with(&Http::for_source(&opts.source), opts)
 }
 
 pub fn check_with(http: &Http, opts: &CheckOptions) -> Result<CheckResult> {

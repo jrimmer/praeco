@@ -59,20 +59,24 @@ fn appimage_wins_over_package_ownership() {
     write_exec(&img, "#!/bin/sh\n");
     let mut env = env_with(&r.bin, &r.home);
     env.appimage = Some(img.clone());
+    env.appdir = Some("/tmp/.mount_abc".into());
     let d = detect(&env, Path::new("/tmp/.mount_abc/usr/bin/fairfax"));
     assert_eq!(d.kind, Some(InstallKind::AppImage));
     assert_eq!(d.target, img);
 
-    // APPDIR must contain the executable when it is set.
+    // APPDIR must contain the executable.
     env.appdir = Some("/tmp/.mount_other".into());
     assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/fairfax")).kind, Some(InstallKind::Pacman));
-    env.appdir = Some("/tmp/.mount_abc".into());
-    assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/fairfax")).kind, Some(InstallKind::AppImage));
+
+    // A stray APPIMAGE without APPDIR says nothing about this app.
+    env.appdir = None;
+    assert_eq!(detect(&env, Path::new(SYSTEM_EXE)).kind, Some(InstallKind::Pacman));
+    assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/fairfax")).kind, Some(InstallKind::Pacman));
 
     // A stale APPIMAGE pointing at nothing is ignored.
-    env.appdir = None;
+    env.appdir = Some("/tmp/.mount_abc".into());
     env.appimage = Some(r.home.join("gone.AppImage"));
-    assert_eq!(detect(&env, Path::new(SYSTEM_EXE)).kind, Some(InstallKind::Pacman));
+    assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/fairfax")).kind, Some(InstallKind::Pacman));
 }
 
 #[test]

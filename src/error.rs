@@ -18,6 +18,7 @@ pub enum ErrorCode {
     Download,
     NeedsTerminal,
     AuthCancelled,
+    AuthFailed,
     InstallFailed,
     TerminalClosed,
     RestartFailed,
@@ -40,6 +41,7 @@ impl ErrorCode {
             ErrorCode::Download => "download",
             ErrorCode::NeedsTerminal => "needs_terminal",
             ErrorCode::AuthCancelled => "auth_cancelled",
+            ErrorCode::AuthFailed => "auth_failed",
             ErrorCode::InstallFailed => "install_failed",
             ErrorCode::TerminalClosed => "terminal_closed",
             ErrorCode::RestartFailed => "restart_failed",
@@ -48,7 +50,7 @@ impl ErrorCode {
     }
 
     pub fn from_code(s: &str) -> ErrorCode {
-        const ALL: [ErrorCode; 17] = [
+        const ALL: [ErrorCode; 18] = [
             ErrorCode::Usage,
             ErrorCode::InvalidVersion,
             ErrorCode::Network,
@@ -62,6 +64,7 @@ impl ErrorCode {
             ErrorCode::Download,
             ErrorCode::NeedsTerminal,
             ErrorCode::AuthCancelled,
+            ErrorCode::AuthFailed,
             ErrorCode::InstallFailed,
             ErrorCode::TerminalClosed,
             ErrorCode::RestartFailed,

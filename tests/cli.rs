@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 fn praeco() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_praeco"));
-    c.env_remove("APPIMAGE").env_remove("APPDIR").env_remove("PRAECO_ESCALATION_CMD").env_remove("PRAECO_TOKEN").env_remove("TERMINAL");
+    c.env_remove("APPIMAGE").env_remove("APPDIR").env_remove("PRAECO_ESCALATION_CMD").env_remove("PRAECO_TOKEN").env_remove("TERMINAL").env_remove("PRAECO_TRUSTED_DIRS");
     c
 }
 
@@ -63,7 +63,7 @@ fn check_with_exe_reports_the_install_kind_and_asset() {
     let img = tmp.path().join("Fairfax.AppImage");
     write_exec(&img, "x");
     let mut args = base_args(&s, "check");
-    args.extend(["--current", "1.0.4", "--no-cache", "--json", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appimage", img.to_str().unwrap()]);
+    args.extend(["--current", "1.0.4", "--no-cache", "--json", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appimage", img.to_str().unwrap(), "--appdir", "/tmp/.mount_x"]);
     let out = praeco().args(&args).output().unwrap();
     let v = &json_lines(&out)[0];
     assert_eq!(v["install"]["kind"], "appimage");
@@ -107,7 +107,7 @@ fn usage_errors_exit_2() {
 #[test]
 fn detect_command() {
     let tmp = tempfile::tempdir().unwrap();
-    let out = praeco().env("PATH", tmp.path()).env("HOME", tmp.path()).args(["detect", "--exe", "/usr/bin/praeco-test-nonexistent"]).output().unwrap();
+    let out = praeco().env("PATH", tmp.path()).env("PRAECO_TRUSTED_DIRS", tmp.path()).env("HOME", tmp.path()).args(["detect", "--exe", "/usr/bin/praeco-test-nonexistent"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     let v = &json_lines(&out)[0];
     assert_eq!(v["kind"], "unsupported");
@@ -171,7 +171,7 @@ fn install_failures_are_events_with_exit_codes() {
     i.server.serve_asset("v1.0.5", "fairfax-x86_64.AppImage.sha256", "0".repeat(64).as_bytes());
     let out = praeco()
         .args(base_args(&i.server, "install"))
-        .args(["--version", "1.0.5", "--exe", "/x/fairfax", "--appimage", i.img.to_str().unwrap()])
+        .args(["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -185,6 +185,7 @@ fn install_failures_are_events_with_exit_codes() {
     let tmp = tempfile::tempdir().unwrap();
     let out = praeco()
         .env("PATH", tmp.path())
+        .env("PRAECO_TRUSTED_DIRS", tmp.path())
         .env("HOME", tmp.path())
         .args(base_args(&i.server, "install"))
         .args(["--version", "1.0.5", "--exe", "/usr/bin/praeco-test-nonexistent"])
@@ -212,6 +213,7 @@ fn escalation_command_env_var_is_used_for_packages() {
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let out = praeco()
         .env("PATH", &path)
+        .env("PRAECO_TRUSTED_DIRS", &bin)
         .env("PRAECO_ESCALATION_CMD", &esc)
         .args(base_args(&s, "install"))
         .args(["--version", "1.0.5", "--exe", "/usr/bin/praeco-test-nonexistent"])
@@ -247,6 +249,7 @@ fn terminal_mode_runs_the_worker_in_a_terminal_and_relays_events() {
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let out = praeco()
         .env("PATH", &path)
+        .env("PRAECO_TRUSTED_DIRS", &bin)
         .env("PRAECO_ESCALATION_CMD", &esc)
         .args(base_args(&s, "install"))
         .args(["--version", "1.0.5", "--exe", "/usr/bin/praeco-test-nonexistent", "--mode", "terminal"])
@@ -279,6 +282,7 @@ fn terminal_mode_reports_a_failed_install() {
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let out = praeco()
         .env("PATH", &path)
+        .env("PRAECO_TRUSTED_DIRS", &bin)
         .env("PRAECO_ESCALATION_CMD", &esc)
         .args(base_args(&s, "install"))
         .args(["--version", "1.0.5", "--exe", "/usr/bin/praeco-test-nonexistent", "--mode", "terminal"])
@@ -301,10 +305,156 @@ fn terminal_mode_without_a_terminal_is_an_error() {
     s.publish_releases(vec![]);
     let out = praeco()
         .env("PATH", &bin)
+        .env("PRAECO_TRUSTED_DIRS", &bin)
         .args(base_args(&s, "install"))
         .args(["--version", "1.0.5", "--exe", "/usr/bin/praeco-test-nonexistent", "--mode", "terminal"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(json_lines(&out).last().unwrap()["message"].as_str().unwrap().contains("TERMINAL"));
+}
+
+// ---- --detach, relocation out of an AppImage mount, paths with spaces ----
+
+fn detach_args<'a>(i: &'a Install, extra: &[&'a str]) -> Vec<String> {
+    let mut v: Vec<String> = base_args(&i.server, "install").iter().map(|s| s.to_string()).collect();
+    for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap()] {
+        v.push(a.to_string());
+    }
+    v.extend(extra.iter().map(|s| s.to_string()));
+    v
+}
+
+fn wait_for_event(path: &Path, event: &str) -> Vec<Value> {
+    let end = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < end {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if text.contains(&format!("\"event\":\"{event}\"")) {
+            return text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("no {event} event in {}: {:?}", path.display(), std::fs::read_to_string(path));
+}
+
+#[test]
+fn detach_returns_at_once_and_the_update_survives_in_the_progress_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let i = appimage_install(b"NEW APPIMAGE");
+    let progress = i.tmp.path().join("progress.jsonl");
+    let marker = i.tmp.path().join("restarted");
+    let old = Command::new("sleep").arg("60").spawn().unwrap();
+    let mut old = old;
+    let pid = old.id().to_string();
+    let script = format!("echo \"$0\" > '{}'", marker.display());
+    let args = detach_args(&i, &["--progress-file", progress.to_str().unwrap(), "--detach", "--restart-pid", &pid, "--restart", "--", "sh", "-c", &script, "--detach"]);
+    let started = Instant::now();
+    let out = praeco().args(&args).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(started.elapsed() < Duration::from_secs(5), "the caller is not kept waiting");
+    let lines = json_lines(&out);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["event"], "detached");
+    assert_eq!(lines[0]["progress_file"], progress.to_str().unwrap());
+
+    let ev = wait_for_event(&progress, "done");
+    assert_eq!(ev[0]["event"], "resolving");
+    assert_eq!(ev.last().unwrap()["event"], "done");
+    assert_eq!(ev.last().unwrap()["restarted"], true);
+    assert_eq!(std::fs::metadata(&progress).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::read_to_string(&i.img).unwrap(), "NEW APPIMAGE");
+    assert!(wait_for(&marker), "the detached run restarted the app");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "--detach", "arguments after --restart reach the app untouched");
+    old.wait().unwrap();
+}
+
+#[test]
+fn detach_without_a_progress_file_uses_a_private_directory_and_prints_its_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let i = appimage_install(b"NEW");
+    let out = praeco().args(detach_args(&i, &["--detach"])).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let path = PathBuf::from(json_lines(&out)[0]["progress_file"].as_str().unwrap());
+    let dir = path.parent().unwrap().to_path_buf();
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    wait_for_event(&path, "done");
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn detach_refuses_an_existing_file_and_a_shared_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let i = appimage_install(b"NEW");
+    let existing = i.tmp.path().join("exists.jsonl");
+    std::fs::write(&existing, "precious").unwrap();
+    let out = praeco().args(detach_args(&i, &["--detach", "--progress-file", existing.to_str().unwrap()])).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(std::fs::read_to_string(&existing).unwrap(), "precious", "an existing file (or symlink target) is never touched");
+
+    let link = i.tmp.path().join("link.jsonl");
+    std::os::unix::fs::symlink(&existing, &link).unwrap();
+    let out = praeco().args(detach_args(&i, &["--detach", "--progress-file", link.to_str().unwrap()])).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(std::fs::read_to_string(&existing).unwrap(), "precious");
+
+    let shared = i.tmp.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let out = praeco().args(detach_args(&i, &["--detach", "--progress-file", shared.join("p.jsonl").to_str().unwrap()])).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!shared.join("p.jsonl").exists());
+    assert_eq!(std::fs::read_to_string(&i.img).unwrap(), "OLD", "nothing was installed");
+}
+
+#[test]
+fn praeco_inside_an_appimage_mount_runs_from_a_private_copy_when_it_will_outlive_the_app() {
+    let i = appimage_install(b"NEW");
+    let mount = PathBuf::from(format!("/tmp/.mount_praecotest{}", std::process::id()));
+    std::fs::create_dir_all(mount.join("usr/bin")).unwrap();
+    let inside = mount.join("usr/bin/praeco");
+    std::fs::copy(env!("CARGO_BIN_EXE_praeco"), &inside).unwrap();
+    let marker = i.tmp.path().join("who");
+    let script = format!("readlink /proc/$PPID/exe > '{}'", marker.display());
+    let mut args = base_args(&i.server, "install").iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap(), "--restart", "--", "sh", "-c", &script] {
+        args.push(a.to_string());
+    }
+    let mut c = Command::new(&inside);
+    c.args(&args).env_remove("APPIMAGE").env_remove("PRAECO_SELF_COPY_DIR");
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(json_lines(&out).last().unwrap()["event"], "done");
+    assert!(wait_for(&marker));
+    let who = std::fs::read_to_string(&marker).unwrap();
+    assert!(who.contains("praeco-self-") && !who.contains(".mount_"), "praeco restarted the app from a copy outside the mount: {who}");
+    let _ = std::fs::remove_dir_all(&mount);
+    // The copy removes itself when it is done.
+    let dir = Path::new(who.trim().trim_end_matches(" (deleted)")).parent().unwrap().to_path_buf();
+    let end = Instant::now() + Duration::from_secs(5);
+    while dir.exists() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!dir.exists(), "{} was left behind", dir.display());
+}
+
+#[test]
+fn terminal_mode_works_when_praeco_lives_in_a_path_with_spaces() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    fake_terminal(&bin);
+    let spaced = tmp.path().join("dir with  spaces");
+    std::fs::create_dir_all(&spaced).unwrap();
+    let copy = spaced.join("praeco");
+    std::fs::copy(env!("CARGO_BIN_EXE_praeco"), &copy).unwrap();
+    let i = appimage_install(b"NEW");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let mut args = detach_args(&i, &[]);
+    args.extend(["--mode".to_string(), "terminal".to_string()]);
+    let out = Command::new(&copy).args(&args).env("PATH", &path).env_remove("APPIMAGE").stdin(Stdio::null()).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let names: Vec<String> = json_lines(&out).iter().map(|e| e["event"].as_str().unwrap().to_string()).collect();
+    assert_eq!(names.first().map(String::as_str), Some("terminal_opened"));
+    assert_eq!(names.last().map(String::as_str), Some("done"));
+    assert_eq!(std::fs::read_to_string(&i.img).unwrap(), "NEW");
 }

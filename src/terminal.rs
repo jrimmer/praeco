@@ -27,7 +27,7 @@ pub struct Terminal {
 }
 
 /// Known terminals and the arguments that make them run a command.
-const KNOWN: [(&str, &[&str]); 15] = [
+const KNOWN: [(&str, &[&str]); 13] = [
     ("xdg-terminal-exec", &[]),
     ("foot", &[]),
     ("kitty", &[]),
@@ -37,13 +37,15 @@ const KNOWN: [(&str, &[&str]); 15] = [
     ("gnome-terminal", &["--wait", "--"]),
     ("konsole", &["-e"]),
     ("xfce4-terminal", &["-x"]),
-    ("tilix", &["-e"]),
     ("terminator", &["-x"]),
-    ("lxterminal", &["-e"]),
     ("x-terminal-emulator", &["-e"]),
     ("urxvt", &["-e"]),
     ("xterm", &["-e"]),
 ];
+
+/// Terminals whose `-e` takes one string that they split again (so a path with
+/// spaces would break) and that have no argv form: never used.
+const NO_ARGV_FORM: [&str; 2] = ["tilix", "lxterminal"];
 
 fn known_prefix(name: &str) -> Vec<String> {
     KNOWN.iter().find(|(n, _)| *n == name).map(|(_, p)| p.iter().map(|s| s.to_string()).collect()).unwrap_or_else(|| vec!["-e".into()])
@@ -61,6 +63,11 @@ pub fn find_terminal(env: &Env) -> Option<Terminal> {
             let program = if first.contains('/') { Some(PathBuf::from(first)) } else { env.which(first) };
             if let Some(program) = program {
                 let base = program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if NO_ARGV_FORM.contains(&base.as_str()) {
+                    return KNOWN.iter().skip(1).find_map(|(n, p)| {
+                        env.which(n).map(|program| Terminal { name: (*n).into(), program, prefix: p.iter().map(|s| s.to_string()).collect() })
+                    });
+                }
                 let mut prefix: Vec<String> = parts.map(str::to_string).collect();
                 prefix.extend(known_prefix(&base));
                 return Some(Terminal { name: base, program, prefix });
@@ -203,5 +210,51 @@ pub fn install_via_terminal(opts: &InstallOptions, emit: &mut dyn FnMut(&Event))
             }
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::Source;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn exe(dir: &std::path::Path, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    fn env(dir: &std::path::Path, terminal: Option<&str>) -> Env {
+        let mut e = Env::from_process();
+        e.path = dir.as_os_str().to_os_string();
+        e.terminal = terminal.map(str::to_string);
+        e
+    }
+
+    #[test]
+    fn terminals_without_an_argv_form_are_never_used() {
+        let d = tempfile::tempdir().unwrap();
+        exe(d.path(), "tilix");
+        exe(d.path(), "lxterminal");
+        assert_eq!(find_terminal(&env(d.path(), None)), None, "not even from the built-in list");
+        assert_eq!(find_terminal(&env(d.path(), Some("tilix"))), None, "nor from $TERMINAL");
+        exe(d.path(), "foot");
+        assert_eq!(find_terminal(&env(d.path(), Some("tilix"))).unwrap().name, "foot");
+    }
+
+    #[test]
+    fn terminal_command_keeps_paths_with_spaces_as_single_arguments() {
+        let d = tempfile::tempdir().unwrap();
+        exe(d.path(), "alacritty");
+        let t = find_terminal(&env(d.path(), None)).unwrap();
+        assert_eq!(t.prefix, ["-e"]);
+        let mut o = crate::install::InstallOptions::new(Source::github("o/r").unwrap(), "1.0.5", "/home/u/My Apps/fairfax");
+        o.env.appimage = Some("/home/u/My Apps/Fairfax.AppImage".into());
+        let args = worker_args(&o, std::path::Path::new("/run/user/1000/dir with space/events.jsonl"));
+        assert!(args.iter().any(|a| a == "/home/u/My Apps/fairfax"));
+        assert!(args.iter().any(|a| a == "/home/u/My Apps/Fairfax.AppImage"));
+        assert!(args.iter().any(|a| a == "/run/user/1000/dir with space/events.jsonl"));
     }
 }

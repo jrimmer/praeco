@@ -16,6 +16,7 @@ use serde::Serialize;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 pub const HELP: &str = "\
@@ -57,6 +58,11 @@ install OPTIONS
   --restart-pid PID        quit this process (SIGTERM) and wait for it before relaunching
   --restart -- CMD ARGS... command line that starts the new version (must be last)
   --restart-timeout SECS   how long to wait for the app to quit (default 30)
+  --detach                 continue in a background process in its own session and return at
+                           once; progress goes to --progress-file as JSON lines (see README)
+  --progress-file PATH     with --detach: where to write the events. Must not exist; created
+                           0600 in a directory only you can write to. Default: a new private
+                           temporary directory (its path is printed in the `detached` event).
 
 EXIT CODES
   0 success (check: also when no update exists)   3 needs_terminal (retry with --mode terminal)
@@ -68,6 +74,9 @@ install prints one JSON object per line on stdout; check --json prints one objec
 
 #[derive(Default)]
 struct Args {
+    raw: Vec<OsString>,
+    detach: bool,
+    progress_file: Option<PathBuf>,
     command: String,
     github: Option<String>,
     github_api_base: Option<String>,
@@ -96,7 +105,7 @@ fn usage(msg: impl Into<String>) -> Error {
 }
 
 fn parse(args: Vec<OsString>) -> Result<Args> {
-    let mut a = Args::default();
+    let mut a = Args { raw: args.clone(), ..Args::default() };
     let mut it = args.into_iter();
     a.command = it.next().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
     while let Some(raw) = it.next() {
@@ -144,6 +153,8 @@ fn parse(args: Vec<OsString>) -> Result<Args> {
                     _ => return Err(usage("--restart must be followed by -- and the command that starts the app")),
                 }
             }
+            "--detach" => a.detach = true,
+            "--progress-file" => a.progress_file = Some(PathBuf::from(value(&mut it)?)),
             "--events-file" => a.events_file = Some(PathBuf::from(value(&mut it)?)),
             "--appimage" => a.appimage = Some(PathBuf::from(value(&mut it)?)),
             "--appdir" => a.appdir = Some(PathBuf::from(value(&mut it)?)),
@@ -235,7 +246,7 @@ fn cmd_check(a: &Args) -> Result<()> {
     if a.no_cache {
         opts.cache_dir = None;
     }
-    let (result, releases) = check::check_full(&Http::new(), &opts)?;
+    let (result, releases) = check::check_full(&Http::for_source(&opts.source), &opts)?;
     let install = a.exe.as_ref().map(|exe| {
         let latest = releases.iter().max_by(|x, y| x.version.cmp(&y.version));
         install::describe(&a.env(), exe, latest, &a.patterns().unwrap_or_default())
@@ -289,6 +300,9 @@ fn install_options(a: &Args, mode: Mode, in_terminal: bool) -> Result<InstallOpt
     o.include_prereleases = a.prereleases;
     o.token = a.token();
     o.env = a.env();
+    // Test seam, compiled into debug builds only: a release binary always
+    // escalates with pkexec or sudo.
+    #[cfg(debug_assertions)]
     if let Some(cmd) = std::env::var("PRAECO_ESCALATION_CMD").ok().filter(|c| !c.trim().is_empty()) {
         o.escalation = Some(cmd.split_whitespace().map(OsString::from).collect());
     }
@@ -303,6 +317,10 @@ fn cmd_install(a: &Args) -> Result<()> {
         Some(other) => return Err(usage(format!("'{other}' is not a mode; use dialog or terminal"))),
     };
     let opts = install_options(a, mode, false)?;
+    if a.detach {
+        return cmd_detach(a);
+    }
+    relocate_out_of_appimage(a)?;
     let restart = match (a.restart, a.restart_pid) {
         (true, pid) => {
             if a.restart_argv.is_empty() {
@@ -319,13 +337,109 @@ fn cmd_install(a: &Args) -> Result<()> {
     };
     ignore_hangup();
     let mut emit = |e: &Event| out_line(&e.to_line());
-    match update::run(&opts, restart.as_ref(), &mut emit) {
+    let result = match update::run(&opts, restart.as_ref(), &mut emit) {
         Ok(()) => Ok(()),
         Err(e) => {
             emit(&error_event(&e));
             Err(e)
         }
+    };
+    remove_self_copy();
+    result
+}
+
+/// Is `exe` inside an AppImage mount (under `appdir`, or a `/tmp/.mount_*`)?
+/// That mount vanishes when the app exits, taking praeco with it.
+pub fn in_appimage_mount(exe: &std::path::Path, appdir: Option<&std::path::Path>) -> bool {
+    exe.to_string_lossy().starts_with("/tmp/.mount_") || appdir.is_some_and(|d| !d.as_os_str().is_empty() && exe.starts_with(d))
+}
+
+/// When praeco itself lives inside the app's AppImage mount and will outlive the
+/// app (a restart or a detached run), copy it to a private temp directory and
+/// continue from the copy. Replaces the process on success.
+fn relocate_out_of_appimage(a: &Args) -> Result<()> {
+    if !(a.restart || a.detach) {
+        return Ok(());
     }
+    let exe = std::env::current_exe()?;
+    if !in_appimage_mount(&exe, a.env().appdir.as_deref()) {
+        return Ok(());
+    }
+    let dir = tempfile::Builder::new().prefix("praeco-self-").tempdir()?.keep();
+    let copy = dir.join("praeco");
+    let fail = |e: std::io::Error| {
+        let _ = std::fs::remove_dir_all(&dir);
+        Error::new(ErrorCode::Io, format!("praeco runs from inside the AppImage, which disappears when the app quits, and could not copy itself out: {e}"))
+    };
+    std::fs::copy(&exe, &copy).map_err(fail)?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
+    }
+    use std::os::unix::process::CommandExt;
+    let err = Command::new(&copy).args(&a.raw).env("PRAECO_SELF_COPY_DIR", &dir).exec();
+    Err(fail(err))
+}
+
+/// The relocated copy deletes itself (its private directory) when it is done.
+fn remove_self_copy() {
+    let Some(dir) = std::env::var_os("PRAECO_SELF_COPY_DIR").map(PathBuf::from) else { return };
+    let ours = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
+    let named = dir.file_name().is_some_and(|n| n.to_string_lossy().starts_with("praeco-self-"));
+    if named && ours.as_deref() == Some(dir.as_path()) {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// `--detach`: create the progress file, start praeco again in a new session
+/// writing its events there, report the path, and return at once.
+fn cmd_detach(a: &Args) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let path = match &a.progress_file {
+        Some(p) => std::path::absolute(p)?,
+        None => tempfile::Builder::new().prefix("praeco-progress-").tempdir()?.keep().join("progress.jsonl"),
+    };
+    let parent = path.parent().ok_or_else(|| usage("--progress-file needs a file name"))?;
+    let meta = std::fs::metadata(parent).map_err(|e| usage(format!("The folder for --progress-file ({}) is not usable: {e}", parent.display())))?;
+    if !meta.is_dir() || meta.uid() != nix::unistd::geteuid().as_raw() || meta.permissions().mode() & 0o022 != 0 {
+        return Err(usage(format!(
+            "The folder for --progress-file ({}) must be yours and not writable by anyone else",
+            parent.display()
+        )));
+    }
+    relocate_out_of_appimage(a)?;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| usage(format!("Could not create the progress file {}: {e} (it must not exist yet)", path.display())))?;
+
+    // The child gets the same arguments minus --detach and --progress-file.
+    let mut child_args: Vec<OsString> = Vec::new();
+    let mut it = a.raw.iter();
+    while let Some(arg) = it.next() {
+        match arg.to_str() {
+            Some("--detach") => {}
+            Some("--progress-file") => {
+                it.next();
+            }
+            Some(s) if s.starts_with("--progress-file=") => {}
+            Some("--restart") => {
+                // Everything after --restart belongs to the app's own command line.
+                child_args.push(arg.clone());
+                child_args.extend(it.by_ref().cloned());
+            }
+            _ => child_args.push(arg.clone()),
+        }
+    }
+    let mut cmd = Command::new(std::env::current_exe()?);
+    cmd.args(child_args).stdin(Stdio::null()).stdout(Stdio::from(file)).stderr(Stdio::null());
+    crate::restart::make_session_leader(&mut cmd);
+    // A child that fails early writes its own error event into the file.
+    cmd.spawn().map_err(|e| Error::new(ErrorCode::Io, format!("Could not start the background update: {e}")))?;
+    out_line(&Event::Detached { progress_file: path.display().to_string() }.to_line());
+    Ok(())
 }
 
 /// The worker that runs inside the terminal window.
@@ -436,6 +550,24 @@ mod tests {
         assert_eq!(a.version.as_deref(), Some("1.0.5"));
         assert_eq!(a.restart_pid, Some(42));
         assert_eq!(a.restart_argv, ["/usr/bin/fairfax", "--flag", "--version"].map(OsString::from));
+    }
+
+    #[test]
+    fn detach_flags_parse() {
+        let a = p(&["install", "--detach", "--progress-file", "/run/user/1/p.jsonl", "--restart", "--", "app", "--detach"]).unwrap();
+        assert!(a.detach);
+        assert_eq!(a.progress_file.as_deref(), Some(std::path::Path::new("/run/user/1/p.jsonl")));
+        assert_eq!(a.restart_argv, ["app", "--detach"].map(OsString::from), "the app's own arguments are left alone");
+    }
+
+    #[test]
+    fn appimage_mount_detection() {
+        use std::path::Path;
+        assert!(in_appimage_mount(Path::new("/tmp/.mount_FairfaX1/usr/bin/praeco"), None));
+        assert!(in_appimage_mount(Path::new("/opt/mnt/usr/bin/praeco"), Some(Path::new("/opt/mnt"))));
+        assert!(!in_appimage_mount(Path::new("/usr/bin/praeco"), Some(Path::new("/opt/mnt"))));
+        assert!(!in_appimage_mount(Path::new("/usr/bin/praeco"), None));
+        assert!(!in_appimage_mount(Path::new("/tmp/mount_x/praeco"), None));
     }
 
     #[test]

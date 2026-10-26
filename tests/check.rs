@@ -155,3 +155,24 @@ fn token_goes_to_the_api_with_the_right_scheme() {
     check(&o).unwrap();
     assert_eq!(s.requests_for(FakeServer::releases_path()).last().unwrap().header("authorization"), None);
 }
+
+#[test]
+fn http_to_loopback_is_only_allowed_for_a_loopback_source() {
+    use praeco::http::Http;
+    let s = FakeServer::start();
+    let loopback = url::Url::parse(&format!("{}/x", s.base)).unwrap();
+    // A strict client (what any https source gets) refuses to be steered to http://127.0.0.1.
+    let strict = Http::new();
+    assert!(!strict.hop_allowed(&loopback));
+    let e = strict.get(&loopback, "text/plain", None, &[]).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Network);
+    assert!(e.message.contains("insecure"), "{}", e.message);
+    assert!(s.requests.lock().unwrap().is_empty(), "no request was made");
+    // A source that is itself loopback may use it.
+    assert!(Http::for_source(&s.source()).hop_allowed(&loopback));
+    // A remote https source may not.
+    let remote = Source::forgejo("https://code.example.com", "o/r").unwrap();
+    assert!(!Http::for_source(&remote).hop_allowed(&loopback));
+    assert!(!Http::for_source(&Source::github("o/r").unwrap()).hop_allowed(&loopback));
+    assert!(Http::for_source(&remote).hop_allowed(&url::Url::parse("https://code.example.com/").unwrap()));
+}
