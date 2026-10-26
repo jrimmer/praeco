@@ -3,7 +3,7 @@
 
 use crate::assets::AssetPatterns;
 use crate::check::{self, CheckOptions, CheckResult};
-use crate::detect::{self, Env, InstallKind};
+use crate::detect::{Env, InstallKind};
 use crate::error::{Error, ErrorCode, Result};
 use crate::http::Http;
 use crate::install::{self, InstallInfo, InstallOptions, Mode};
@@ -107,7 +107,7 @@ fn parse(args: Vec<OsString>) -> Result<Args> {
             Some((n, v)) if n.starts_with("--") => (n.to_string(), Some(OsString::from(v))),
             _ => (flag.clone(), None),
         };
-        let mut value = |it: &mut std::vec::IntoIter<OsString>| -> Result<OsString> {
+        let value = |it: &mut std::vec::IntoIter<OsString>| -> Result<OsString> {
             inline.clone().or_else(|| it.next()).ok_or_else(|| usage(format!("{name} needs a value")))
         };
         let text = |v: OsString| v.to_string_lossy().into_owned();
