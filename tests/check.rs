@@ -11,8 +11,8 @@ fn opts(server: &FakeServer, current: &str) -> CheckOptions {
     o
 }
 
-fn fairfax_releases(s: &FakeServer) -> Vec<serde_json::Value> {
-    let body = |n: &str| format!("### Changes in {n}\n- something\n\n## Install\n\nsudo pacman -U fairfax.pkg.tar.zst\n");
+fn myapp_releases(s: &FakeServer) -> Vec<serde_json::Value> {
+    let body = |n: &str| format!("### Changes in {n}\n- something\n\n## Install\n\nsudo pacman -U myapp.pkg.tar.zst\n");
     let mut draft = s.release("v1.0.7", "draft", &[]);
     draft["draft"] = json!(true);
     let mut pre = s.release("v1.1.0-rc1", "rc", &[]);
@@ -30,7 +30,7 @@ fn fairfax_releases(s: &FakeServer) -> Vec<serde_json::Value> {
 #[test]
 fn newer_releases_with_notes_newest_first() {
     let s = FakeServer::start();
-    s.publish_releases(fairfax_releases(&s));
+    s.publish_releases(myapp_releases(&s));
     let r = check(&opts(&s, "v1.0.4")).unwrap();
     assert!(r.update_available);
     assert_eq!(r.latest.as_deref(), Some("1.0.6"));
@@ -46,7 +46,7 @@ fn newer_releases_with_notes_newest_first() {
 #[test]
 fn prereleases_only_when_asked() {
     let s = FakeServer::start();
-    s.publish_releases(fairfax_releases(&s));
+    s.publish_releases(myapp_releases(&s));
     let mut o = opts(&s, "1.0.6");
     assert!(!check(&o).unwrap().update_available);
     o.include_prereleases = true;
@@ -67,7 +67,7 @@ fn custom_marker() {
 #[test]
 fn up_to_date() {
     let s = FakeServer::start();
-    s.publish_releases(fairfax_releases(&s));
+    s.publish_releases(myapp_releases(&s));
     let r = check(&opts(&s, "1.0.6")).unwrap();
     assert!(!r.update_available && r.releases.is_empty());
     assert_eq!(r.latest.as_deref(), Some("1.0.6"));
@@ -113,7 +113,7 @@ fn offline_is_a_network_error_not_a_panic() {
 #[test]
 fn etag_cache_uses_conditional_requests() {
     let s = FakeServer::start();
-    let json = serde_json::to_vec(&fairfax_releases(&s)).unwrap();
+    let json = serde_json::to_vec(&myapp_releases(&s)).unwrap();
     s.route(FakeServer::releases_path(), 200, &[("ETag", "\"abc123\"")], json);
     let cache = tempfile::tempdir().unwrap();
     let mut o = opts(&s, "1.0.4");

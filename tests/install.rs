@@ -33,7 +33,7 @@ impl Rig {
 
     /// An AppImage install: returns options and the path of the old file.
     fn appimage(&self, version: &str) -> (InstallOptions, PathBuf) {
-        let img = self.home.join("Fairfax.AppImage");
+        let img = self.home.join("MyApp.AppImage");
         write_exec(&img, "OLD IMAGE");
         let mut o = self.opts(version, &img);
         o.env.appimage = Some(img.clone());
@@ -52,7 +52,7 @@ fn events_of(o: &InstallOptions) -> (Vec<Event>, praeco::Result<praeco::Installe
     (ev, r)
 }
 
-const IMG: &str = "fairfax-x86_64.AppImage";
+const IMG: &str = "myapp-x86_64.AppImage";
 
 #[test]
 fn appimage_is_replaced_atomically_in_place_with_progress() {
@@ -69,7 +69,7 @@ fn appimage_is_replaced_atomically_in_place_with_progress() {
     assert_eq!(std::fs::read(&img).unwrap(), content);
     assert_eq!(std::fs::metadata(&img).unwrap().permissions().mode() & 0o777, 0o750);
     let names: Vec<_> = std::fs::read_dir(&r.home).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    assert_eq!(names, ["Fairfax.AppImage"], "no temp files left behind");
+    assert_eq!(names, ["MyApp.AppImage"], "no temp files left behind");
 
     let kinds: Vec<&str> = ev
         .iter()
@@ -138,7 +138,7 @@ fn bad_missing_or_conflicting_checksums_fail_closed() {
 fn only_the_repos_own_release_assets_are_downloaded() {
     let r = rig();
     // The listing points at another repository's path on the same host, and at another host.
-    let evil_path = "/evil/other/releases/download/v1.0.5/fairfax-x86_64.AppImage";
+    let evil_path = "/evil/other/releases/download/v1.0.5/myapp-x86_64.AppImage";
     r.server.route(evil_path, 200, &[], "EVIL");
     let mut rel = r.server.release("v1.0.5", "", &[IMG]);
     rel["assets"][0]["browser_download_url"] = json!(format!("{}{evil_path}", r.server.base));
@@ -175,7 +175,7 @@ fn resolution_errors() {
     let r = rig();
     let mut pre = r.server.release("v1.1.0-rc1", "", &["x-x86_64.deb"]);
     pre["prerelease"] = json!(true);
-    r.server.publish_releases(vec![r.server.release("v1.0.5", "", &["fairfax-amd64.deb"]), pre]);
+    r.server.publish_releases(vec![r.server.release("v1.0.5", "", &["myapp-amd64.deb"]), pre]);
     let (o, _) = r.appimage("1.0.9");
     assert_eq!(install(&o, &mut |_| {}).unwrap_err().code, ErrorCode::NoRelease);
     let (o, _) = r.appimage("1.0.5");
@@ -192,7 +192,7 @@ fn resolution_errors() {
 fn source_builds_are_unsupported_and_nothing_is_fetched() {
     let r = rig();
     r.server.publish_releases(vec![]);
-    let o = r.opts("1.0.5", Path::new("/opt/praeco-test-nonexistent/fairfax"));
+    let o = r.opts("1.0.5", Path::new("/opt/praeco-test-nonexistent/myapp"));
     let (ev, res) = events_of(&o);
     let e = res.unwrap_err();
     assert_eq!(e.code, ErrorCode::Unsupported);
@@ -204,18 +204,18 @@ fn source_builds_are_unsupported_and_nothing_is_fetched() {
 #[test]
 fn tarball_install_end_to_end() {
     let r = rig();
-    let root = r.home.join(".local/opt/fairfax");
-    write_exec(&root.join("bin/fairfax"), "old");
+    let root = r.home.join(".local/opt/myapp");
+    write_exec(&root.join("bin/myapp"), "old");
     std::fs::write(root.join("settings.keep"), "mine").unwrap();
-    let name = "fairfax-linux-x86_64.tar.gz";
-    let archive = tgz(&[("fairfax-linux-x86_64/bin/fairfax", b"new binary", 0o755), ("fairfax-linux-x86_64/share/a.txt", b"data", 0o644)]);
+    let name = "myapp-linux-x86_64.tar.gz";
+    let archive = tgz(&[("myapp-linux-x86_64/bin/myapp", b"new binary", 0o755), ("myapp-linux-x86_64/share/a.txt", b"data", 0o644)]);
     let rel = r.server.publish_one("v1.0.5", name, &archive);
     r.server.publish_releases(vec![rel]);
-    let o = r.opts("1.0.5", &root.join("bin/fairfax"));
+    let o = r.opts("1.0.5", &root.join("bin/myapp"));
     let done = install(&o, &mut |_| {}).unwrap();
     assert_eq!(done.kind, InstallKind::Tarball);
-    assert_eq!(std::fs::read_to_string(root.join("bin/fairfax")).unwrap(), "new binary");
-    assert_eq!(std::fs::metadata(root.join("bin/fairfax")).unwrap().permissions().mode() & 0o777, 0o755);
+    assert_eq!(std::fs::read_to_string(root.join("bin/myapp")).unwrap(), "new binary");
+    assert_eq!(std::fs::metadata(root.join("bin/myapp")).unwrap().permissions().mode() & 0o777, 0o755);
     assert_eq!(std::fs::read_to_string(root.join("share/a.txt")).unwrap(), "data");
     assert_eq!(std::fs::read_to_string(root.join("settings.keep")).unwrap(), "mine");
 }
@@ -266,13 +266,13 @@ fn assert_installs_file(p: &PkgRig, kind: InstallKind) {
 
 #[test]
 fn pacman_command() {
-    let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], 0, "");
+    let p = pkg_rig(InstallKind::Pacman, "myapp-x86_64.pkg.tar.zst", &["pacman"], 0, "");
     let done = install(&p.opts(), &mut |_| {}).unwrap();
     assert_eq!(done.kind, InstallKind::Pacman);
     let argv = p.argv();
     assert_eq!(argv[0], p.r.bin.join("pacman").to_str().unwrap());
     assert_eq!(&argv[1..3], ["-U", "--noconfirm"]);
-    assert!(argv[3].ends_with("/fairfax-x86_64.pkg.tar.zst"));
+    assert!(argv[3].ends_with("/myapp-x86_64.pkg.tar.zst"));
     assert_eq!(argv.len(), 4);
     assert_installs_file(&p, InstallKind::Pacman);
     // praeco itself only ever ran the ownership query; the install went to the escalator.
@@ -282,15 +282,15 @@ fn pacman_command() {
 
 #[test]
 fn deb_command_prefers_apt_get_and_falls_back_to_dpkg() {
-    let p = pkg_rig(InstallKind::Deb, "fairfax-amd64.deb", &["dpkg", "apt-get"], 0, "");
+    let p = pkg_rig(InstallKind::Deb, "myapp-amd64.deb", &["dpkg", "apt-get"], 0, "");
     install(&p.opts(), &mut |_| {}).unwrap();
     let argv = p.argv();
     assert_eq!(argv[0], p.r.bin.join("apt-get").to_str().unwrap());
     assert_eq!(&argv[1..3], ["install", "-y"]);
-    assert!(argv[3].ends_with("/fairfax-amd64.deb"));
+    assert!(argv[3].ends_with("/myapp-amd64.deb"));
     assert_installs_file(&p, InstallKind::Deb);
 
-    let p = pkg_rig(InstallKind::Deb, "fairfax-amd64.deb", &["dpkg"], 0, "");
+    let p = pkg_rig(InstallKind::Deb, "myapp-amd64.deb", &["dpkg"], 0, "");
     install(&p.opts(), &mut |_| {}).unwrap();
     let argv = p.argv();
     assert_eq!(argv[0], p.r.bin.join("dpkg").to_str().unwrap());
@@ -300,14 +300,14 @@ fn deb_command_prefers_apt_get_and_falls_back_to_dpkg() {
 
 #[test]
 fn rpm_command_prefers_dnf_and_falls_back_to_rpm() {
-    let p = pkg_rig(InstallKind::Rpm, "fairfax-x86_64.rpm", &["rpm", "dnf"], 0, "");
+    let p = pkg_rig(InstallKind::Rpm, "myapp-x86_64.rpm", &["rpm", "dnf"], 0, "");
     install(&p.opts(), &mut |_| {}).unwrap();
     let argv = p.argv();
     assert_eq!(argv[0], p.r.bin.join("dnf").to_str().unwrap());
     assert_eq!(&argv[1..3], ["install", "-y"]);
     assert_installs_file(&p, InstallKind::Rpm);
 
-    let p = pkg_rig(InstallKind::Rpm, "fairfax-x86_64.rpm", &["rpm"], 0, "");
+    let p = pkg_rig(InstallKind::Rpm, "myapp-x86_64.rpm", &["rpm"], 0, "");
     install(&p.opts(), &mut |_| {}).unwrap();
     let argv = p.argv();
     assert_eq!(argv[0], p.r.bin.join("rpm").to_str().unwrap());
@@ -330,7 +330,7 @@ fn package_command_is_pure() {
 fn escalation_failures_map_to_clear_errors() {
     // pkexec-style exit codes are only interpreted when the escalator is pkexec.
     for (code, want) in [(126, ErrorCode::AuthCancelled), (127, ErrorCode::AuthFailed)] {
-        let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], code, "");
+        let p = pkg_rig(InstallKind::Pacman, "myapp-x86_64.pkg.tar.zst", &["pacman"], code, "");
         let pk = escalator(&p.r.tmp.path().join("pk"), "pkexec", &p.rec, code, "");
         let mut o = p.opts();
         o.escalation = Some(vec![pk.into_os_string()]);
@@ -338,11 +338,11 @@ fn escalation_failures_map_to_clear_errors() {
         assert_eq!(res.unwrap_err().code, want, "exit {code}");
         assert!(!ev.iter().any(|e| matches!(e, Event::Installed { .. })));
     }
-    let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], 126, "");
+    let p = pkg_rig(InstallKind::Pacman, "myapp-x86_64.pkg.tar.zst", &["pacman"], 126, "");
     let e = install(&p.opts(), &mut |_| {}).unwrap_err();
     assert_eq!(e.code, ErrorCode::InstallFailed, "126 from a non-pkexec escalator is a plain failure");
 
-    let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], 1, "error: failed to commit transaction (conflicting files)");
+    let p = pkg_rig(InstallKind::Pacman, "myapp-x86_64.pkg.tar.zst", &["pacman"], 1, "error: failed to commit transaction (conflicting files)");
     let e = install(&p.opts(), &mut |_| {}).unwrap_err();
     assert_eq!(e.code, ErrorCode::InstallFailed);
     assert!(e.message.contains("conflicting files"), "{}", e.message);
@@ -390,13 +390,13 @@ fn escalation_resolution_and_needs_terminal_detection() {
 
 #[test]
 fn dialog_mode_without_an_agent_stops_before_downloading() {
-    let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], 0, "");
+    let p = pkg_rig(InstallKind::Pacman, "myapp-x86_64.pkg.tar.zst", &["pacman"], 0, "");
     let mut o = p.r.opts("1.0.5", &p.exe);
     o.escalation = None;
     // euid 1000, no pkexec on PATH.
     let e = install(&o, &mut |_| {}).unwrap_err();
     assert_eq!(e.code, ErrorCode::NeedsTerminal);
-    assert_eq!(p.r.requested(&FakeServer::asset_path("v1.0.5", "fairfax-x86_64.pkg.tar.zst")), 0);
+    assert_eq!(p.r.requested(&FakeServer::asset_path("v1.0.5", "myapp-x86_64.pkg.tar.zst")), 0);
     assert!(p.argv().is_empty());
 }
 
@@ -454,7 +454,7 @@ fn trusted_programs_must_not_be_writable_by_others_or_owned_by_a_user() {
 
 #[test]
 fn package_manager_gets_a_fixed_path_not_the_users() {
-    let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], 0, "");
+    let p = pkg_rig(InstallKind::Pacman, "myapp-x86_64.pkg.tar.zst", &["pacman"], 0, "");
     let envfile = p.r.tmp.path().join("env.txt");
     let esc = p.r.tmp.path().join("env-esc");
     write_exec(&esc, &format!("#!/bin/sh\n/usr/bin/env > '{}'\nexit 0\n", envfile.display()));
@@ -483,7 +483,7 @@ fn package_path_must_be_absolute_and_a_relative_tmpdir_is_ignored() {
 #[test]
 fn forgejo_attachment_urls_work_when_listed() {
     let r = rig();
-    let name = "fairfax-x86_64.AppImage";
+    let name = "myapp-x86_64.AppImage";
     r.server.route("/attachments/uuid-1", 200, &[], b"NEW".to_vec());
     r.server.route("/attachments/uuid-2", 200, &[], format!("{}  {name}\n", sha256_hex(b"NEW")).into_bytes());
     let mut rel = r.server.release("v1.0.5", "", &[name, &format!("{name}.sha256")]);
@@ -497,7 +497,7 @@ fn forgejo_attachment_urls_work_when_listed() {
 
 #[test]
 fn pkexec_127_means_no_agent_only_when_it_says_so() {
-    let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], 127, "Error getting authority: No authentication agent found.");
+    let p = pkg_rig(InstallKind::Pacman, "myapp-x86_64.pkg.tar.zst", &["pacman"], 127, "Error getting authority: No authentication agent found.");
     let pk = escalator(&p.r.tmp.path().join("pk"), "pkexec", &p.rec, 127, "Error executing command as another user: No authentication agent found.");
     let mut o = p.opts();
     o.escalation = Some(vec![pk.into_os_string()]);

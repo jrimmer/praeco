@@ -185,7 +185,7 @@ pub fn write_exec(path: &Path, script: &str) {
 /// resembling a package query, and exits with `code`.
 pub fn shim(dir: &Path, name: &str, code: i32) -> PathBuf {
     let p = dir.join(name);
-    write_exec(&p, &format!("#!/bin/sh\necho \"$@\" >> '{}/{name}.log'\necho \"{name}: owned by fairfax\"\nexit {code}\n", dir.display()));
+    write_exec(&p, &format!("#!/bin/sh\necho \"$@\" >> '{}/{name}.log'\necho \"{name}: owned by myapp\"\nexit {code}\n", dir.display()));
     p
 }
 

@@ -5,6 +5,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+/// A release file name for the machine running the tests. The CLI picks files by
+/// the real architecture, so x86_64 names would be (rightly) refused elsewhere.
+fn native(name: &str) -> String {
+    match std::env::consts::ARCH {
+        "x86_64" => name.to_string(),
+        "aarch64" => name.replace("x86_64", "aarch64").replace("amd64", "arm64"),
+        arch => name.replace("x86_64", arch),
+    }
+}
+
 fn praeco() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_praeco"));
     c.env_remove("APPIMAGE").env_remove("APPDIR").env_remove("PRAECO_ESCALATION_CMD").env_remove("PRAECO_TOKEN").env_remove("TERMINAL").env_remove("PRAECO_TRUSTED_DIRS");
@@ -58,17 +68,17 @@ fn check_json() {
 #[test]
 fn check_with_exe_reports_the_install_kind_and_asset() {
     let s = FakeServer::start();
-    s.publish_releases(vec![s.release("v1.0.5", "x", &["fairfax-x86_64.AppImage", "fairfax-amd64.deb"])]);
+    s.publish_releases(vec![s.release("v1.0.5", "x", &[&native("myapp-x86_64.AppImage"), &native("myapp-amd64.deb")])]);
     let tmp = tempfile::tempdir().unwrap();
-    let img = tmp.path().join("Fairfax.AppImage");
+    let img = tmp.path().join("MyApp.AppImage");
     write_exec(&img, "x");
     let mut args = base_args(&s, "check");
-    args.extend(["--current", "1.0.4", "--no-cache", "--json", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appimage", img.to_str().unwrap(), "--appdir", "/tmp/.mount_x"]);
+    args.extend(["--current", "1.0.4", "--no-cache", "--json", "--exe", "/tmp/.mount_x/usr/bin/myapp", "--appimage", img.to_str().unwrap(), "--appdir", "/tmp/.mount_x"]);
     let out = praeco().args(&args).output().unwrap();
     let v = &json_lines(&out)[0];
     assert_eq!(v["install"]["kind"], "appimage");
     assert_eq!(v["install"]["supported"], true);
-    assert_eq!(v["install"]["asset"]["name"], "fairfax-x86_64.AppImage");
+    assert_eq!(v["install"]["asset"]["name"], native("myapp-x86_64.AppImage").as_str());
     assert_eq!(v["install"]["target"], img.to_str().unwrap());
 }
 
@@ -124,18 +134,15 @@ struct Install {
 fn appimage_install(content: &[u8]) -> Install {
     let tmp = tempfile::tempdir().unwrap();
     let server = FakeServer::start();
-    let rel = server.publish_one("v1.0.5", "fairfax-x86_64.AppImage", content);
+    let rel = server.publish_one("v1.0.5", &native("myapp-x86_64.AppImage"), content);
     server.publish_releases(vec![rel]);
-    let img = tmp.path().join("Fairfax.AppImage");
+    let img = tmp.path().join("MyApp.AppImage");
     write_exec(&img, "OLD");
     Install { tmp, server, img }
 }
 
 #[test]
 fn install_appimage_then_restart_prints_json_lines() {
-    if std::env::consts::ARCH != "x86_64" {
-        return;
-    }
     let i = appimage_install(b"NEW APPIMAGE");
     let marker = i.tmp.path().join("restarted");
     let old = Command::new("sleep").arg("60").spawn().unwrap();
@@ -143,7 +150,7 @@ fn install_appimage_then_restart_prints_json_lines() {
     let script = format!("echo \"$APPIMAGE|$APPDIR\" > '{}'", marker.display());
     let out = praeco()
         .args(base_args(&i.server, "install"))
-        .args(["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appimage", i.img.to_str().unwrap()])
+        .args(["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/myapp", "--appimage", i.img.to_str().unwrap()])
         .args(["--restart-pid", &old.id().to_string(), "--restart", "--", "sh", "-c", &script])
         .env("APPIMAGE", "/stale/old.AppImage")
         .env("APPDIR", "/tmp/.mount_x")
@@ -168,10 +175,10 @@ fn install_appimage_then_restart_prints_json_lines() {
 fn install_failures_are_events_with_exit_codes() {
     let i = appimage_install(b"NEW");
     // checksum mismatch -> exit 1, error event last
-    i.server.serve_asset("v1.0.5", "fairfax-x86_64.AppImage.sha256", "0".repeat(64).as_bytes());
+    i.server.serve_asset("v1.0.5", &native("myapp-x86_64.AppImage.sha256"), "0".repeat(64).as_bytes());
     let out = praeco()
         .args(base_args(&i.server, "install"))
-        .args(["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap()])
+        .args(["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/myapp", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap()])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -208,7 +215,7 @@ fn escalation_command_env_var_is_used_for_packages() {
     let rec = tmp.path().join("rec");
     let esc = escalator(&tmp.path().join("esc"), "recorder", &rec, 0, "");
     let s = FakeServer::start();
-    let rel = s.publish_one("v1.0.5", "fairfax-x86_64.pkg.tar.zst", b"PKG");
+    let rel = s.publish_one("v1.0.5", &native("myapp-x86_64.pkg.tar.zst"), b"PKG");
     s.publish_releases(vec![rel]);
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let out = praeco()
@@ -243,7 +250,7 @@ fn terminal_mode_runs_the_worker_in_a_terminal_and_relays_events() {
     let rec = tmp.path().join("rec");
     let esc = escalator(&tmp.path().join("esc"), "recorder", &rec, 0, "");
     let s = FakeServer::start();
-    let rel = s.publish_one("v1.0.5", "fairfax-x86_64.pkg.tar.zst", b"PKG");
+    let rel = s.publish_one("v1.0.5", &native("myapp-x86_64.pkg.tar.zst"), b"PKG");
     s.publish_releases(vec![rel]);
     let marker = tmp.path().join("restarted");
     let path = format!("{}:/usr/bin:/bin", bin.display());
@@ -277,7 +284,7 @@ fn terminal_mode_reports_a_failed_install() {
     let rec = tmp.path().join("rec");
     let esc = escalator(&tmp.path().join("esc"), "recorder", &rec, 1, "error: could not lock database");
     let s = FakeServer::start();
-    let rel = s.publish_one("v1.0.5", "fairfax-x86_64.pkg.tar.zst", b"PKG");
+    let rel = s.publish_one("v1.0.5", &native("myapp-x86_64.pkg.tar.zst"), b"PKG");
     s.publish_releases(vec![rel]);
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let out = praeco()
@@ -318,7 +325,7 @@ fn terminal_mode_without_a_terminal_is_an_error() {
 
 fn detach_args<'a>(i: &'a Install, extra: &[&'a str]) -> Vec<String> {
     let mut v: Vec<String> = base_args(&i.server, "install").iter().map(|s| s.to_string()).collect();
-    for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap()] {
+    for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/myapp", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap()] {
         v.push(a.to_string());
     }
     v.extend(extra.iter().map(|s| s.to_string()));
@@ -417,7 +424,7 @@ fn praeco_inside_an_appimage_mount_runs_from_a_private_copy_when_it_will_outlive
     let marker = i.tmp.path().join("who");
     let script = format!("readlink /proc/$PPID/exe > '{}'", marker.display());
     let mut args = base_args(&i.server, "install").iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap(), "--restart", "--", "sh", "-c", &script] {
+    for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/myapp", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap(), "--restart", "--", "sh", "-c", &script] {
         args.push(a.to_string());
     }
     let mut c = Command::new(&inside);
@@ -466,7 +473,7 @@ fn a_bogus_appdir_never_causes_a_relocation_loop() {
     let before = count();
     for appdir in ["/tmp", "/", "/usr"] {
         let mut args = base_args(&i.server, "install").iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        for a in ["--version", "1.0.5", "--exe", "/tmp/x/fairfax", "--appdir", appdir, "--appimage", i.img.to_str().unwrap(), "--restart", "--", "/bin/true"] {
+        for a in ["--version", "1.0.5", "--exe", "/tmp/x/myapp", "--appdir", appdir, "--appimage", i.img.to_str().unwrap(), "--restart", "--", "/bin/true"] {
             args.push(a.to_string());
         }
         let mut c = praeco();
@@ -492,7 +499,7 @@ fn a_bogus_appdir_never_causes_a_relocation_loop() {
     let inside = mount.join("usr/bin/praeco");
     std::fs::copy(env!("CARGO_BIN_EXE_praeco"), &inside).unwrap();
     let mut args = base_args(&i.server, "install").iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap(), "--restart", "--", "/bin/true"] {
+    for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/myapp", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap(), "--restart", "--", "/bin/true"] {
         args.push(a.to_string());
     }
     let out = Command::new(&inside).args(&args).env_remove("PRAECO_SELF_COPY_DIR").output().unwrap();
@@ -514,8 +521,8 @@ fn relocation_cleans_search_paths_and_leaves_one_progress_dir() {
     let progress_dirs = || std::fs::read_dir("/tmp").unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("praeco-progress-")).count();
     let before = progress_dirs();
     let mut args = detach_args(&i, &["--detach", "--restart", "--", "sh", "-c", &script]);
-    let ix = args.iter().position(|a| a == "/tmp/.mount_x/usr/bin/fairfax").unwrap();
-    args[ix] = "/tmp/.mount_x/usr/bin/fairfax".into();
+    let ix = args.iter().position(|a| a == "/tmp/.mount_x/usr/bin/myapp").unwrap();
+    args[ix] = "/tmp/.mount_x/usr/bin/myapp".into();
     let out = Command::new(&inside)
         .args(&args)
         .env("LD_LIBRARY_PATH", format!("{}/usr/lib", mount.display()))

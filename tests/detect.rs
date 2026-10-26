@@ -28,7 +28,7 @@ fn pacman_owner() {
     shim(&r.bin, "rpm", 1);
     let d = detect(&env_with(&r.bin, &r.home), Path::new(SYSTEM_EXE));
     assert_eq!(d.kind, Some(InstallKind::Pacman));
-    assert!(d.detail.unwrap().contains("fairfax"));
+    assert!(d.detail.unwrap().contains("myapp"));
     assert_eq!(std::fs::read_to_string(r.bin.join("pacman.log")).unwrap().trim(), format!("-Qo {SYSTEM_EXE}"));
 }
 
@@ -55,35 +55,35 @@ fn rpm_owner() {
 fn appimage_wins_over_package_ownership() {
     let r = rig();
     shim(&r.bin, "pacman", 0);
-    let img = r.home.join("Apps/Fairfax.AppImage");
+    let img = r.home.join("Apps/MyApp.AppImage");
     write_exec(&img, "#!/bin/sh\n");
     let mut env = env_with(&r.bin, &r.home);
     env.appimage = Some(img.clone());
     env.appdir = Some("/tmp/.mount_abc".into());
-    let d = detect(&env, Path::new("/tmp/.mount_abc/usr/bin/fairfax"));
+    let d = detect(&env, Path::new("/tmp/.mount_abc/usr/bin/myapp"));
     assert_eq!(d.kind, Some(InstallKind::AppImage));
     assert_eq!(d.target, img);
 
     // APPDIR must contain the executable.
     env.appdir = Some("/tmp/.mount_other".into());
-    assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/fairfax")).kind, Some(InstallKind::Pacman));
+    assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/myapp")).kind, Some(InstallKind::Pacman));
 
     // A stray APPIMAGE without APPDIR says nothing about this app.
     env.appdir = None;
     assert_eq!(detect(&env, Path::new(SYSTEM_EXE)).kind, Some(InstallKind::Pacman));
-    assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/fairfax")).kind, Some(InstallKind::Pacman));
+    assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/myapp")).kind, Some(InstallKind::Pacman));
 
     // A stale APPIMAGE pointing at nothing is ignored.
     env.appdir = Some("/tmp/.mount_abc".into());
     env.appimage = Some(r.home.join("gone.AppImage"));
-    assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/fairfax")).kind, Some(InstallKind::Pacman));
+    assert_eq!(detect(&env, Path::new("/tmp/.mount_abc/usr/bin/myapp")).kind, Some(InstallKind::Pacman));
 }
 
 #[test]
 fn tarball_under_home() {
     let r = rig();
     shim(&r.bin, "pacman", 1);
-    let exe = r.home.join(".local/opt/fairfax/bin/fairfax");
+    let exe = r.home.join(".local/opt/myapp/bin/myapp");
     write_exec(&exe, "#!/bin/sh\n");
     let d = detect(&env_with(&r.bin, &r.home), &exe);
     assert_eq!(d.kind, Some(InstallKind::Tarball));
