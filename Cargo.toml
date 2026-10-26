@@ -1,11 +1,15 @@
 [package]
 name = "praeco"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
-description = "Shared update library and CLI for Linux desktop apps"
+description = "Update checks and in-place updates for Linux desktop apps released on GitHub or Forgejo"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/jrimmer/praeco"
+keywords = ["update", "updater", "self-update", "linux", "desktop"]
+categories = ["command-line-utilities", "os::linux-apis"]
+exclude = [".github/"]
 
 [lib]
 name = "praeco"

@@ -1,0 +1,99 @@
+# Builds static praeco binaries for x86_64 and aarch64 Linux and, for a version
+# tag, publishes them with their checksums as a GitHub release. Run it by hand
+# (workflow_dispatch) to build and test without releasing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+      ASSET: praeco-linux-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Cargo.toml says $v but the tag is $GITHUB_REF_NAME"; exit 1; }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --locked --release --target "$TARGET"
+
+      - name: Package
+        run: |
+          mkdir dist
+          cp "target/$TARGET/release/praeco" "dist/$ASSET"
+          cd dist
+          file "$ASSET"
+          file "$ASSET" | grep -q 'statically linked' || { echo "not a static binary"; exit 1; }
+          "./$ASSET" --version
+          sha256sum "$ASSET" > "$ASSET.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: dist/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Release notes
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          awk -v v="$v" '$0 ~ "^## " v "( |$)" {on=1; next} /^## / && on {exit} on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for $v"; exit 1; }
+          cat >> notes.md <<NOTES
+
+          ## Install
+
+          Static binaries for x86_64 and aarch64 Linux, each with a \`.sha256\` file; \`SHA256SUMS\` lists both.
+          Apps ship praeco in their own packages: see [Shipping praeco with your app](https://github.com/jrimmer/praeco#shipping-praeco-with-your-app).
+          Rust apps can use the crate instead: \`cargo add praeco@$v\`.
+          NOTES
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          cat praeco-linux-*.sha256 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "praeco ${GITHUB_REF_NAME#v}" --notes-file ../notes.md \
+            praeco-linux-* SHA256SUMS
