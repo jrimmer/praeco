@@ -208,7 +208,7 @@ pub fn install_tarball_with(archive: &Path, exe: &Path, home: &Path, limits: Ext
     let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     let layout = find_layout(archive, &exe, &home, limits)?;
     let root = &layout.root;
-    let stage = tempfile::Builder::new().prefix(".praeco-stage-").tempdir_in(root).map_err(|e| denied(root, &e))?;
+    let stage = tempfile::Builder::new().permissions(std::fs::Permissions::from_mode(0o700)).prefix(".praeco-stage-").tempdir_in(root).map_err(|e| denied(root, &e))?;
 
     let mut budget = Budget { limits, bytes: 0, entries: 0 };
     let mut ar = open_tar(archive)?;

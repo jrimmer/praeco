@@ -13,6 +13,7 @@ use crate::progress::Event;
 use crate::restart::is_running;
 use crate::source::Host;
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt as _;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -152,7 +153,7 @@ pub fn install_via_terminal(opts: &InstallOptions, emit: &mut dyn FnMut(&Event))
         Error::new(ErrorCode::InstallFailed, "No terminal program was found. Set the TERMINAL environment variable to your terminal, or install with your package manager.")
     })?;
     let me = std::env::current_exe().map_err(|e| Error::new(ErrorCode::Io, format!("Cannot locate praeco itself: {e}")))?;
-    let dir = tempfile::Builder::new().prefix("praeco-term-").tempdir()?;
+    let dir = tempfile::Builder::new().permissions(std::fs::Permissions::from_mode(0o700)).prefix("praeco-term-").tempdir()?;
     let events = dir.path().join("events.jsonl");
     std::fs::File::create(&events)?;
 

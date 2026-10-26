@@ -14,6 +14,7 @@ use crate::source::Source;
 use crate::update;
 use serde::Serialize;
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt as _;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -365,7 +366,7 @@ fn relocate_out_of_appimage(a: &Args) -> Result<()> {
     if !in_appimage_mount(&exe, a.env().appdir.as_deref()) {
         return Ok(());
     }
-    let dir = tempfile::Builder::new().prefix("praeco-self-").tempdir()?.keep();
+    let dir = tempfile::Builder::new().permissions(std::fs::Permissions::from_mode(0o700)).prefix("praeco-self-").tempdir()?.keep();
     let copy = dir.join("praeco");
     let fail = |e: std::io::Error| {
         let _ = std::fs::remove_dir_all(&dir);
@@ -373,7 +374,6 @@ fn relocate_out_of_appimage(a: &Args) -> Result<()> {
     };
     std::fs::copy(&exe, &copy).map_err(fail)?;
     {
-        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
     }
     use std::os::unix::process::CommandExt;
@@ -394,10 +394,10 @@ fn remove_self_copy() {
 /// `--detach`: create the progress file, start praeco again in a new session
 /// writing its events there, report the path, and return at once.
 fn cmd_detach(a: &Args) -> Result<()> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let path = match &a.progress_file {
         Some(p) => std::path::absolute(p)?,
-        None => tempfile::Builder::new().prefix("praeco-progress-").tempdir()?.keep().join("progress.jsonl"),
+        None => tempfile::Builder::new().permissions(std::fs::Permissions::from_mode(0o700)).prefix("praeco-progress-").tempdir()?.keep().join("progress.jsonl"),
     };
     let parent = path.parent().ok_or_else(|| usage("--progress-file needs a file name"))?;
     let meta = std::fs::metadata(parent).map_err(|e| usage(format!("The folder for --progress-file ({}) is not usable: {e}", parent.display())))?;

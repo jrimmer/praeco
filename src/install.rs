@@ -2,6 +2,7 @@
 //! Used identically by dialog mode, by the in-terminal worker, and by library
 //! callers; only the way administrator rights are obtained differs.
 
+use std::os::unix::fs::PermissionsExt as _;
 use crate::assets::{self, AssetPatterns};
 use crate::check::fetch_releases;
 use crate::detect::{self, Detection, Env, InstallKind, TRUSTED_PATH};
@@ -211,7 +212,7 @@ pub fn temp_base(tmpdir: Option<OsString>) -> PathBuf {
 fn private_dir() -> Result<tempfile::TempDir> {
     let base = temp_base(std::env::var_os("TMPDIR"));
     let base = std::fs::canonicalize(&base).unwrap_or(base);
-    Ok(tempfile::Builder::new().prefix("praeco-").tempdir_in(base)?)
+    Ok(tempfile::Builder::new().permissions(std::fs::Permissions::from_mode(0o700)).prefix("praeco-").tempdir_in(base)?)
 }
 
 /// Run the whole pipeline. Emits `resolving`, `downloading`, `verifying`,
