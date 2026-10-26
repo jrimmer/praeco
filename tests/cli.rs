@@ -492,7 +492,7 @@ fn a_bogus_appdir_never_causes_a_relocation_loop() {
     let inside = mount.join("usr/bin/praeco");
     std::fs::copy(env!("CARGO_BIN_EXE_praeco"), &inside).unwrap();
     let mut args = base_args(&i.server, "install").iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    for a in ["--version", "1.0.5", "--exe", "/tmp/x/fairfax", "--appimage", i.img.to_str().unwrap(), "--restart", "--", "/bin/true"] {
+    for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap(), "--restart", "--", "/bin/true"] {
         args.push(a.to_string());
     }
     let out = Command::new(&inside).args(&args).env_remove("PRAECO_SELF_COPY_DIR").output().unwrap();
