@@ -351,28 +351,28 @@ mod tests {
     fn layout_with_top_dir_and_bin() {
         let d = tempfile::tempdir().unwrap();
         let tgz = d.path().join("a.tar.gz");
-        make_tgz(&tgz, &[("fairfax-1.0.5/bin/fairfax", b"x", 0o755), ("fairfax-1.0.5/share/a", b"y", 0o644)], &[]);
-        let l = find_layout(&tgz, Path::new("/home/u/.local/bin/fairfax"), Path::new("/home/u"), ExtractLimits::default()).unwrap();
+        make_tgz(&tgz, &[("myapp-1.0.5/bin/myapp", b"x", 0o755), ("myapp-1.0.5/share/a", b"y", 0o644)], &[]);
+        let l = find_layout(&tgz, Path::new("/home/u/.local/bin/myapp"), Path::new("/home/u"), ExtractLimits::default()).unwrap();
         assert_eq!(l.root, PathBuf::from("/home/u/.local"));
-        assert_eq!(l.prefix, ["fairfax-1.0.5"]);
+        assert_eq!(l.prefix, ["myapp-1.0.5"]);
     }
 
     #[test]
     fn tarball_extracts_over_install() {
         let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("opt/fairfax");
+        let root = d.path().join("opt/myapp");
         fs::create_dir_all(root.join("bin")).unwrap();
-        fs::write(root.join("bin/fairfax"), "old").unwrap();
+        fs::write(root.join("bin/myapp"), "old").unwrap();
         fs::write(root.join("keep.txt"), "mine").unwrap();
         let tgz = d.path().join("a.tar.gz");
         make_tgz(
             &tgz,
-            &[("fairfax-linux/bin/fairfax", b"new", 0o755), ("fairfax-linux/lib/x.so.1", b"lib", 0o644)],
-            &[("fairfax-linux/lib/x.so", "x.so.1")],
+            &[("myapp-linux/bin/myapp", b"new", 0o755), ("myapp-linux/lib/x.so.1", b"lib", 0o644)],
+            &[("myapp-linux/lib/x.so", "x.so.1")],
         );
-        install_tarball(&tgz, &root.join("bin/fairfax"), &d.path().join("home")).unwrap();
-        assert_eq!(fs::read_to_string(root.join("bin/fairfax")).unwrap(), "new");
-        assert_eq!(fs::metadata(root.join("bin/fairfax")).unwrap().permissions().mode() & 0o777, 0o755);
+        install_tarball(&tgz, &root.join("bin/myapp"), &d.path().join("home")).unwrap();
+        assert_eq!(fs::read_to_string(root.join("bin/myapp")).unwrap(), "new");
+        assert_eq!(fs::metadata(root.join("bin/myapp")).unwrap().permissions().mode() & 0o777, 0o755);
         assert_eq!(fs::read_to_string(root.join("lib/x.so.1")).unwrap(), "lib");
         assert_eq!(fs::read_link(root.join("lib/x.so")).unwrap(), PathBuf::from("x.so.1"));
         assert_eq!(fs::read_to_string(root.join("keep.txt")).unwrap(), "mine");
@@ -383,25 +383,25 @@ mod tests {
     #[test]
     fn tarball_refuses_escapes_and_changes_nothing() {
         let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("opt/fairfax");
+        let root = d.path().join("opt/myapp");
         fs::create_dir_all(root.join("bin")).unwrap();
-        fs::write(root.join("bin/fairfax"), "old").unwrap();
+        fs::write(root.join("bin/myapp"), "old").unwrap();
         let tgz = d.path().join("evil.tar.gz");
-        make_tgz(&tgz, &[("bin/fairfax", b"new", 0o755)], &[("bin/evil", "../../../etc/passwd")]);
-        let err = install_tarball(&tgz, &root.join("bin/fairfax"), &d.path().join("home")).unwrap_err();
+        make_tgz(&tgz, &[("bin/myapp", b"new", 0o755)], &[("bin/evil", "../../../etc/passwd")]);
+        let err = install_tarball(&tgz, &root.join("bin/myapp"), &d.path().join("home")).unwrap_err();
         assert_eq!(err.code, ErrorCode::InstallFailed);
-        assert_eq!(fs::read_to_string(root.join("bin/fairfax")).unwrap(), "old");
+        assert_eq!(fs::read_to_string(root.join("bin/myapp")).unwrap(), "old");
     }
 
     #[test]
     fn tarball_without_the_executable_is_refused() {
         let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("opt/fairfax");
+        let root = d.path().join("opt/myapp");
         fs::create_dir_all(root.join("bin")).unwrap();
-        fs::write(root.join("bin/fairfax"), "old").unwrap();
+        fs::write(root.join("bin/myapp"), "old").unwrap();
         let tgz = d.path().join("a.tar.gz");
         make_tgz(&tgz, &[("README", b"hi", 0o644)], &[]);
-        assert!(install_tarball(&tgz, &root.join("bin/fairfax"), &d.path().join("home")).is_err());
+        assert!(install_tarball(&tgz, &root.join("bin/myapp"), &d.path().join("home")).is_err());
     }
 
     fn home_with_exe(d: &Path, rel: &str) -> (PathBuf, PathBuf) {
@@ -414,12 +414,12 @@ mod tests {
 
     #[test]
     fn tarball_unpacked_in_home_cannot_overwrite_home_files() {
-        // Fairfax's tarball unpacked straight into the home folder.
+        // MyApp's tarball unpacked straight into the home folder.
         let d = tempfile::tempdir().unwrap();
-        let (home, exe) = home_with_exe(d.path(), "fairfax-linux-x86_64/lib/fairfax/fairfax");
+        let (home, exe) = home_with_exe(d.path(), "myapp-linux-x86_64/lib/myapp/myapp");
         fs::write(home.join(".bashrc"), "mine").unwrap();
         let tgz = d.path().join("evil.tar.gz");
-        make_tgz(&tgz, &[("fairfax-linux-x86_64/lib/fairfax/fairfax", b"new", 0o755), (".bashrc", b"owned", 0o644)], &[]);
+        make_tgz(&tgz, &[("myapp-linux-x86_64/lib/myapp/myapp", b"new", 0o755), (".bashrc", b"owned", 0o644)], &[]);
         let err = install_tarball(&tgz, &exe, &home).unwrap_err();
         assert!(err.message.contains("outside the app's own folder"), "{}", err.message);
         assert_eq!(fs::read_to_string(home.join(".bashrc")).unwrap(), "mine");
@@ -429,28 +429,28 @@ mod tests {
     #[test]
     fn tarball_unpacked_in_home_installs_into_its_own_folder_only() {
         let d = tempfile::tempdir().unwrap();
-        let (home, exe) = home_with_exe(d.path(), "fairfax-linux-x86_64/lib/fairfax/fairfax");
+        let (home, exe) = home_with_exe(d.path(), "myapp-linux-x86_64/lib/myapp/myapp");
         let tgz = d.path().join("a.tar.gz");
-        make_tgz(&tgz, &[("fairfax-linux-x86_64/lib/fairfax/fairfax", b"new", 0o755), ("fairfax-linux-x86_64/share/a", b"x", 0o644)], &[]);
+        make_tgz(&tgz, &[("myapp-linux-x86_64/lib/myapp/myapp", b"new", 0o755), ("myapp-linux-x86_64/share/a", b"x", 0o644)], &[]);
         install_tarball(&tgz, &exe, &home).unwrap();
         assert_eq!(fs::read_to_string(&exe).unwrap(), "new");
-        assert!(home.join("fairfax-linux-x86_64/share/a").exists());
+        assert!(home.join("myapp-linux-x86_64/share/a").exists());
         let top: Vec<_> = fs::read_dir(&home).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-        assert_eq!(top, ["fairfax-linux-x86_64"], "{top:?}");
+        assert_eq!(top, ["myapp-linux-x86_64"], "{top:?}");
     }
 
     #[test]
     fn tarball_may_never_unpack_into_home_itself_or_hidden_config_folders() {
         let d = tempfile::tempdir().unwrap();
         // The executable sits directly in $HOME: the only possible root is $HOME.
-        let (home, exe) = home_with_exe(d.path(), "fairfax");
+        let (home, exe) = home_with_exe(d.path(), "myapp");
         let tgz = d.path().join("a.tar.gz");
-        make_tgz(&tgz, &[("fairfax", b"new", 0o755), (".bashrc", b"owned", 0o644)], &[]);
+        make_tgz(&tgz, &[("myapp", b"new", 0o755), (".bashrc", b"owned", 0o644)], &[]);
         assert!(install_tarball(&tgz, &exe, &home).unwrap_err().message.contains("home folder"));
         assert!(!home.join(".bashrc").exists());
         // Directly inside a hidden folder such as ~/.ssh.
-        let (home2, exe2) = home_with_exe(&d.path().join("two"), ".ssh/fairfax");
-        make_tgz(&tgz, &[("fairfax", b"new", 0o755), ("authorized_keys", b"owned", 0o644)], &[]);
+        let (home2, exe2) = home_with_exe(&d.path().join("two"), ".ssh/myapp");
+        make_tgz(&tgz, &[("myapp", b"new", 0o755), ("authorized_keys", b"owned", 0o644)], &[]);
         assert!(install_tarball(&tgz, &exe2, &home2).is_err());
         assert!(!home2.join(".ssh/authorized_keys").exists());
     }
@@ -463,37 +463,37 @@ mod tests {
         assert!(!root_acceptable(home, home));
         assert!(!root_acceptable(Path::new("/home/u/.config"), home));
         assert!(root_acceptable(Path::new("/home/u/.local"), home));
-        assert!(root_acceptable(Path::new("/home/u/.local/opt/fairfax"), home));
-        assert!(root_acceptable(Path::new("/home/u/Apps/fairfax"), home));
+        assert!(root_acceptable(Path::new("/home/u/.local/opt/myapp"), home));
+        assert!(root_acceptable(Path::new("/home/u/Apps/myapp"), home));
     }
 
     #[test]
     fn tarball_size_and_count_limits() {
         let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("opt/fairfax");
+        let root = d.path().join("opt/myapp");
         fs::create_dir_all(root.join("bin")).unwrap();
-        fs::write(root.join("bin/fairfax"), "old").unwrap();
+        fs::write(root.join("bin/myapp"), "old").unwrap();
         let big = vec![0u8; 100_000];
         let tgz = d.path().join("bomb.tar.gz");
-        make_tgz(&tgz, &[("bin/fairfax", b"new", 0o755), ("bin/big", &big, 0o644)], &[]);
+        make_tgz(&tgz, &[("bin/myapp", b"new", 0o755), ("bin/big", &big, 0o644)], &[]);
         let home = d.path().join("home");
-        let e = install_tarball_with(&tgz, &root.join("bin/fairfax"), &home, ExtractLimits { max_bytes: 50_000, max_entries: 100 }).unwrap_err();
+        let e = install_tarball_with(&tgz, &root.join("bin/myapp"), &home, ExtractLimits { max_bytes: 50_000, max_entries: 100 }).unwrap_err();
         assert!(e.message.contains("unpacks to more than"), "{}", e.message);
-        let e = install_tarball_with(&tgz, &root.join("bin/fairfax"), &home, ExtractLimits { max_bytes: 1 << 30, max_entries: 1 }).unwrap_err();
+        let e = install_tarball_with(&tgz, &root.join("bin/myapp"), &home, ExtractLimits { max_bytes: 1 << 30, max_entries: 1 }).unwrap_err();
         assert!(e.message.contains("more than 1 files"), "{}", e.message);
-        assert_eq!(fs::read_to_string(root.join("bin/fairfax")).unwrap(), "old");
-        install_tarball_with(&tgz, &root.join("bin/fairfax"), &home, ExtractLimits::default()).unwrap();
-        assert_eq!(fs::read_to_string(root.join("bin/fairfax")).unwrap(), "new");
+        assert_eq!(fs::read_to_string(root.join("bin/myapp")).unwrap(), "old");
+        install_tarball_with(&tgz, &root.join("bin/myapp"), &home, ExtractLimits::default()).unwrap();
+        assert_eq!(fs::read_to_string(root.join("bin/myapp")).unwrap(), "new");
     }
 
     #[test]
     fn symlinked_appimage_is_updated_at_its_real_path() {
         let d = tempfile::tempdir().unwrap();
-        let real = d.path().join("real/Fairfax.AppImage");
+        let real = d.path().join("real/MyApp.AppImage");
         fs::create_dir_all(real.parent().unwrap()).unwrap();
         fs::write(&real, "old").unwrap();
         fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
-        let link = d.path().join("Fairfax.AppImage");
+        let link = d.path().join("MyApp.AppImage");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let src = d.path().join("new");
         fs::write(&src, "new").unwrap();

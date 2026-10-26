@@ -545,9 +545,9 @@ mod tests {
 
     #[test]
     fn parses_check() {
-        let a = p(&["check", "--github", "jrimmer/fairfax", "--current", "1.0.4", "--marker=## Setup", "--json"]).unwrap();
+        let a = p(&["check", "--github", "you/myapp", "--current", "1.0.4", "--marker=## Setup", "--json"]).unwrap();
         assert_eq!(a.command, "check");
-        assert_eq!(a.source().unwrap().owner, "jrimmer");
+        assert_eq!(a.source().unwrap().owner, "you");
         assert_eq!(a.current.as_deref(), Some("1.0.4"));
         assert_eq!(a.marker.as_deref(), Some("## Setup"));
         assert!(a.json);
@@ -556,14 +556,14 @@ mod tests {
     #[test]
     fn parses_forgejo_and_restart_tail() {
         let a = p(&[
-            "install", "--forgejo", "https://code.example.com", "o/r", "--version", "1.0.5", "--exe", "/usr/bin/fairfax", "--restart-pid", "42", "--restart", "--",
-            "/usr/bin/fairfax", "--flag", "--version",
+            "install", "--forgejo", "https://code.example.com", "o/r", "--version", "1.0.5", "--exe", "/usr/bin/myapp", "--restart-pid", "42", "--restart", "--",
+            "/usr/bin/myapp", "--flag", "--version",
         ])
         .unwrap();
         assert!(a.forgejo.is_some());
         assert_eq!(a.version.as_deref(), Some("1.0.5"));
         assert_eq!(a.restart_pid, Some(42));
-        assert_eq!(a.restart_argv, ["/usr/bin/fairfax", "--flag", "--version"].map(OsString::from));
+        assert_eq!(a.restart_argv, ["/usr/bin/myapp", "--flag", "--version"].map(OsString::from));
     }
 
     #[test]
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn appimage_mount_detection() {
         use std::path::Path;
-        assert!(in_appimage_mount(Path::new("/tmp/.mount_FairfaX1/usr/bin/praeco"), None));
+        assert!(in_appimage_mount(Path::new("/tmp/.mount_MyApp1/usr/bin/praeco"), None));
         assert!(in_appimage_mount(Path::new("/run/x/.mount_ab/usr/bin/praeco"), Some(Path::new("/run/x/.mount_ab"))));
         for appdir in ["/", "/tmp", "/home/u", "/opt/mnt"] {
             assert!(!in_appimage_mount(Path::new("/tmp/praeco-self-x/praeco"), Some(Path::new(appdir))), "{appdir}");

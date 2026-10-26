@@ -277,11 +277,11 @@ mod tests {
         exe(d.path(), "alacritty");
         let t = find_terminal(&env(d.path(), None)).unwrap();
         assert_eq!(t.prefix, ["-e"]);
-        let mut o = crate::install::InstallOptions::new(Source::github("o/r").unwrap(), "1.0.5", "/home/u/My Apps/fairfax");
-        o.env.appimage = Some("/home/u/My Apps/Fairfax.AppImage".into());
+        let mut o = crate::install::InstallOptions::new(Source::github("o/r").unwrap(), "1.0.5", "/home/u/My Apps/myapp");
+        o.env.appimage = Some("/home/u/My Apps/MyApp.AppImage".into());
         let args = worker_args(&o, std::path::Path::new("/run/user/1000/dir with space/events.jsonl"));
-        assert!(args.iter().any(|a| a == "/home/u/My Apps/fairfax"));
-        assert!(args.iter().any(|a| a == "/home/u/My Apps/Fairfax.AppImage"));
+        assert!(args.iter().any(|a| a == "/home/u/My Apps/myapp"));
+        assert!(args.iter().any(|a| a == "/home/u/My Apps/MyApp.AppImage"));
         assert!(args.iter().any(|a| a == "/run/user/1000/dir with space/events.jsonl"));
     }
 }

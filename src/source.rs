@@ -86,7 +86,7 @@ impl Source {
         }
     }
 
-    /// Short stable label, e.g. `github:jrimmer/fairfax`.
+    /// Short stable label, e.g. `github:you/myapp`.
     pub fn label(&self) -> String {
         match &self.host {
             Host::GitHub { api_base } if api_base == GITHUB_API => format!("github:{}/{}", self.owner, self.repo),
@@ -152,16 +152,16 @@ mod tests {
 
     #[test]
     fn slug_validation() {
-        assert!(Source::github("jrimmer/fairfax").is_ok());
-        for bad in ["fairfax", "a/b/c", "../x", "a/..", "a b/c", "/c", "a/"] {
+        assert!(Source::github("you/myapp").is_ok());
+        for bad in ["myapp", "a/b/c", "../x", "a/..", "a b/c", "/c", "a/"] {
             assert!(Source::github(bad).is_err(), "{bad}");
         }
     }
 
     #[test]
     fn urls() {
-        let g = Source::github("jrimmer/fairfax").unwrap();
-        assert_eq!(g.releases_url(), "https://api.github.com/repos/jrimmer/fairfax/releases?per_page=100");
+        let g = Source::github("you/myapp").unwrap();
+        assert_eq!(g.releases_url(), "https://api.github.com/repos/you/myapp/releases?per_page=100");
         let f = Source::forgejo("https://code.example.com/", "o/r").unwrap();
         assert_eq!(f.releases_url(), "https://code.example.com/api/v1/repos/o/r/releases?limit=50");
         assert!(Source::forgejo("http://code.example.com", "o/r").is_err());
@@ -170,14 +170,14 @@ mod tests {
 
     #[test]
     fn github_download_rules() {
-        let g = Source::github("jrimmer/fairfax").unwrap();
+        let g = Source::github("you/myapp").unwrap();
         let ok = |s: &str| g.allows_download(&u(s), &[]);
-        assert!(ok("https://github.com/jrimmer/fairfax/releases/download/v1/a.deb"));
-        assert!(ok("https://github.com/JRimmer/Fairfax/releases/download/v1/a.deb"));
-        assert!(!ok("https://github.com/evil/fairfax/releases/download/v1/a.deb"));
-        assert!(!ok("https://evil.com/jrimmer/fairfax/releases/download/v1/a.deb"));
-        assert!(!ok("http://github.com/jrimmer/fairfax/releases/download/v1/a.deb"));
-        assert!(!ok("https://github.com/jrimmer/fairfax/archive/v1.tar.gz"));
+        assert!(ok("https://github.com/you/myapp/releases/download/v1/a.deb"));
+        assert!(ok("https://github.com/You/MyApp/releases/download/v1/a.deb"));
+        assert!(!ok("https://github.com/evil/myapp/releases/download/v1/a.deb"));
+        assert!(!ok("https://evil.com/you/myapp/releases/download/v1/a.deb"));
+        assert!(!ok("http://github.com/you/myapp/releases/download/v1/a.deb"));
+        assert!(!ok("https://github.com/you/myapp/archive/v1.tar.gz"));
     }
 
     #[test]

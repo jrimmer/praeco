@@ -8,8 +8,9 @@ downloads the right file, verifies its SHA-256, installs it, and restarts the ap
 It draws no UI. Each app shows its own pill, "What's new" sheet and buttons, and
 calls praeco underneath.
 
-- **Fairfax** (C++/Qt) runs the `praeco` CLI and reads its JSON.
-- **casabon2** (Rust/gpui) can use the `praeco` library crate directly.
+- **Apps in any language** (C++/Qt, Python, Go, ...) run the `praeco` CLI and read
+  its JSON.
+- **Rust apps** can use the `praeco` library crate directly, or the CLI.
 
 Linux only, x86_64 today. Nothing is hard-coded to x86_64: asset selection follows
 the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64`, ...).
@@ -18,11 +19,11 @@ the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64`, ...).
 
 ```sh
 # Is there something newer than 1.0.4? (JSON)
-praeco check --github jrimmer/fairfax --current 1.0.4 --json
+praeco check --github you/myapp --current 1.0.4 --json
 
 # Install 1.0.5 over the running app, then restart it
-praeco install --github jrimmer/fairfax --version 1.0.5 --exe /usr/bin/fairfax \
-    --restart-pid 4242 --restart -- /usr/bin/fairfax --some-arg
+praeco install --github you/myapp --version 1.0.5 --exe /usr/bin/myapp \
+    --restart-pid 4242 --restart -- /usr/bin/myapp --some-arg
 
 # A Forgejo or Gitea server instead of GitHub
 praeco check --forgejo https://code.example.com owner/repo --current 1.0.4 --json
@@ -138,7 +139,7 @@ Environment: `PRAECO_TOKEN` (see above). Debug builds, which the tests use, also
 ```json
 {
   "ok": true,
-  "source": "github:jrimmer/fairfax",
+  "source": "github:you/myapp",
   "current": "1.0.4",
   "latest": "1.0.6",
   "update_available": true,
@@ -146,18 +147,18 @@ Environment: `PRAECO_TOKEN` (see above). Debug builds, which the tests use, also
     {
       "version": "1.0.6",
       "tag": "v1.0.6",
-      "name": "Fairfax 1.0.6",
+      "name": "MyApp 1.0.6",
       "published_at": "2026-10-24T09:12:00Z",
-      "url": "https://github.com/jrimmer/fairfax/releases/tag/v1.0.6",
+      "url": "https://github.com/you/myapp/releases/tag/v1.0.6",
       "prerelease": false,
       "notes": "### Fixed\n- The sidebar no longer flickers."
     },
     {
       "version": "1.0.5",
       "tag": "v1.0.5",
-      "name": "Fairfax 1.0.5",
+      "name": "MyApp 1.0.5",
       "published_at": "2026-10-20T16:40:00Z",
-      "url": "https://github.com/jrimmer/fairfax/releases/tag/v1.0.5",
+      "url": "https://github.com/you/myapp/releases/tag/v1.0.5",
       "prerelease": false,
       "notes": "### Added\n- Tag chips in the editor."
     }
@@ -181,9 +182,9 @@ an Install button at all:
   "kind": "pacman",
   "supported": true,
   "reason": "Installed as a pacman package",
-  "detail": "/usr/bin/fairfax is owned by fairfax 1.0.4-1",
-  "target": "/usr/bin/fairfax",
-  "asset": { "name": "fairfax-x86_64.pkg.tar.zst", "size": 18874368 }
+  "detail": "/usr/bin/myapp is owned by myapp 1.0.4-1",
+  "target": "/usr/bin/myapp",
+  "asset": { "name": "myapp-x86_64.pkg.tar.zst", "size": 18874368 }
 }
 ```
 
@@ -194,7 +195,7 @@ for this kind and architecture; `reason` says which.
 Up to date:
 
 ```json
-{"ok":true,"source":"github:jrimmer/fairfax","current":"1.0.6","latest":"1.0.6","update_available":false,"releases":[]}
+{"ok":true,"source":"github:you/myapp","current":"1.0.6","latest":"1.0.6","update_available":false,"releases":[]}
 ```
 
 Failure (exit code 1: offline, rate limit, bad response, ...):
@@ -211,7 +212,7 @@ Error codes: `usage`, `invalid_version`, `network`, `rate_limited`, `api`,
 ### `detect`
 
 ```json
-{"ok":true,"kind":"appimage","supported":true,"reason":"Running from the AppImage /home/jason/Apps/Fairfax.AppImage","detail":null,"target":"/home/jason/Apps/Fairfax.AppImage","asset":null}
+{"ok":true,"kind":"appimage","supported":true,"reason":"Running from the AppImage /home/you/Apps/MyApp.AppImage","detail":null,"target":"/home/you/Apps/MyApp.AppImage","asset":null}
 ```
 
 ### `install`: JSON lines
@@ -220,10 +221,10 @@ A successful dialog-mode install with a restart:
 
 ```
 {"event":"resolving","version":"1.0.5"}
-{"event":"downloading","asset":"fairfax-x86_64.pkg.tar.zst","bytes":0,"total":18874368}
-{"event":"downloading","asset":"fairfax-x86_64.pkg.tar.zst","bytes":9437184,"total":18874368}
-{"event":"downloading","asset":"fairfax-x86_64.pkg.tar.zst","bytes":18874368,"total":18874368}
-{"event":"verifying","asset":"fairfax-x86_64.pkg.tar.zst"}
+{"event":"downloading","asset":"myapp-x86_64.pkg.tar.zst","bytes":0,"total":18874368}
+{"event":"downloading","asset":"myapp-x86_64.pkg.tar.zst","bytes":9437184,"total":18874368}
+{"event":"downloading","asset":"myapp-x86_64.pkg.tar.zst","bytes":18874368,"total":18874368}
+{"event":"verifying","asset":"myapp-x86_64.pkg.tar.zst"}
 {"event":"installing","kind":"pacman","message":"Installing the pacman package. Administrator permission is needed."}
 {"event":"installed","version":"1.0.5","kind":"pacman"}
 {"event":"restarting","message":"Closing the app so the new version can start..."}
@@ -253,9 +254,9 @@ for `check` instead of events.
 Examples of the last line on failure:
 
 ```
-{"event":"error","code":"checksum_mismatch","message":"The downloaded fairfax-x86_64.AppImage does not match the checksum in fairfax-x86_64.AppImage.sha256. It was not installed."}
+{"event":"error","code":"checksum_mismatch","message":"The downloaded myapp-x86_64.AppImage does not match the checksum in myapp-x86_64.AppImage.sha256. It was not installed."}
 {"event":"needs_terminal","message":"No polkit authentication agent is running, so a permission prompt cannot appear. Continue in a terminal."}
-{"event":"error","code":"unsupported","message":"/opt/build/fairfax is not owned by a package, is not an AppImage and is not under your home folder, so it looks like a source build. Update it the way you built it."}
+{"event":"error","code":"unsupported","message":"/opt/build/myapp is not owned by a package, is not an AppImage and is not under your home folder, so it looks like a source build. Update it the way you built it."}
 ```
 
 ## Install kinds and the exact commands
@@ -278,10 +279,10 @@ tarball install and is treated as one.
 
 Asset selection: the name must match the kind's pattern; names for another
 architecture (`aarch64`, `arm64`, ...) are excluded; a name that mentions this
-architecture beats one that mentions none. Fairfax's assets
-(`fairfax-x86_64.pkg.tar.zst`, `fairfax-amd64.deb`, `fairfax-x86_64.rpm`,
-`fairfax-x86_64.AppImage`, `fairfax-linux-x86_64.tar.gz`, their `.sha256` files and
-`SHA256SUMS`) all match the defaults. Override with `--asset-pattern`, for example
+architecture beats one that mentions none. Assets named like these
+(`myapp-x86_64.pkg.tar.zst`, `myapp-amd64.deb`, `myapp-x86_64.rpm`,
+`myapp-x86_64.AppImage`, `myapp-linux-x86_64.tar.gz`, their `.sha256` files and
+`SHA256SUMS`) match the defaults. Override with `--asset-pattern`, for example
 `--asset-pattern 'deb=myapp_*_{arch}.deb'`.
 
 The commands that run **elevated**, always on the verified local file in the private
@@ -319,13 +320,13 @@ No root is involved for the other two kinds:
 - **Tarball**: praeco finds the archive entry for the app's executable (same file
   name, longest common path suffix with the installed path). Everything above that
   suffix in the archive is dropped, and everything above it in the installed path is
-  the install root. For `~/.local/opt/fairfax/bin/fairfax` and an archive holding
-  `fairfax-1.0.5/bin/fairfax`, the root is `~/.local/opt/fairfax` and the
-  `fairfax-1.0.5/` prefix is stripped. The root is never `/`, your home folder or any
+  the install root. For `~/.local/opt/myapp/bin/myapp` and an archive holding
+  `myapp-1.0.5/bin/myapp`, the root is `~/.local/opt/myapp` and the
+  `myapp-1.0.5/` prefix is stripped. The root is never `/`, your home folder or any
   parent of it, nor a hidden folder directly in your home folder other than `~/.local`:
   if the match would put it there (an archive unpacked straight into `~`, so the app
-  lives in `~/fairfax-1.0/lib/fairfax/fairfax`), the root moves down to the archive's
-  own top folder (`~/fairfax-1.0`). Every entry must lie below the archive prefix; an
+  lives in `~/myapp-1.0/lib/myapp/myapp`), the root moves down to the archive's
+  own top folder (`~/myapp-1.0`). Every entry must lie below the archive prefix; an
   entry outside it (a `.bashrc` at the top of the archive) is an error and nothing is
   installed. The archive is extracted into a private staging
   directory inside the root (same file system), refusing absolute paths, `..`, hard
@@ -406,7 +407,7 @@ child process of the app may be killed with it, and a process started with
 
 ```
 praeco install SOURCE --version V --exe PATH --restart-pid PID --detach \
-       --progress-file /run/user/1000/fairfax/update-1.jsonl --restart -- /usr/bin/fairfax
+       --progress-file /run/user/1000/myapp/update-1.jsonl --restart -- /usr/bin/myapp
 ```
 
 `--detach` makes praeco start a second copy of itself in a new session (`setsid`, no
@@ -431,15 +432,15 @@ copies itself to a private temporary directory, continues from the copy, and rem
 copy when done. Where possible, ship praeco outside the mount (install it as its own
 package) and skip the copy.
 
-**Qt (Fairfax), the one pattern to use:**
+**C++/Qt, the one pattern to use:**
 
 ```cpp
-const QString dir  = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/fairfax";
+const QString dir  = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/myapp";
 QDir().mkpath(dir);                                   // yours, mode 0700
 QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
 const QString progress = dir + "/update-" + QUuid::createUuid().toString(QUuid::Id128) + ".jsonl";
 
-QStringList args = {"install", "--github", "jrimmer/fairfax", "--version", latest,
+QStringList args = {"install", "--github", "you/myapp", "--version", latest,
                     "--exe", QCoreApplication::applicationFilePath(),
                     "--restart-pid", QString::number(QCoreApplication::applicationPid()),
                     "--detach", "--progress-file", progress,
@@ -455,19 +456,19 @@ QProcess::startDetached("praeco", args);
 The app keeps running while the update downloads and installs; it quits only when praeco
 sends `SIGTERM`, and the new version starts from the detached copy.
 
-**Rust (casabon2):** call the library in-process, as shown below, or use the same CLI
+**Rust:** call the library in-process, as shown below, or use the same CLI
 command with `std::process::Command::new("praeco").args(...).spawn()` and tail the
 progress file the same way. The library path needs no file.
 
 ## Using praeco from an app
 
-### Fairfax (C++/Qt): call the CLI
+### C++/Qt (or any language): call the CLI
 
 On startup, now and then, and on "Check for updates":
 
 ```cpp
 QProcess p;
-p.start("praeco", {"check", "--github", "jrimmer/fairfax", "--current", APP_VERSION,
+p.start("praeco", {"check", "--github", "you/myapp", "--current", APP_VERSION,
                    "--exe", QCoreApplication::applicationFilePath(), "--json"});
 p.waitForFinished(20000);
 auto doc = QJsonDocument::fromJson(p.readAllStandardOutput());   // always valid JSON with --json
@@ -485,12 +486,12 @@ To install, run `praeco install --detach` as described in
 `needs_terminal`, run the same command again with `--mode terminal`. Let SIGTERM quit the
 app cleanly when the restart comes, and show `message` text as is.
 
-### casabon2 (Rust/gpui): use the library
+### Rust: use the library
 
 ```rust
 use praeco::{check, CheckOptions, InstallOptions, Mode, RestartSpec, Source};
 
-let src = Source::github("jrimmer/casabon2")?;
+let src = Source::github("you/myapp")?;
 // Blocking: run on a background thread.
 let result = check(&CheckOptions::new(src.clone(), env!("CARGO_PKG_VERSION")))?;
 if result.update_available {

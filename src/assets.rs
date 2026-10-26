@@ -30,7 +30,7 @@ impl AssetPatterns {
         self.map.insert(kind, patterns);
     }
 
-    /// Apply a `kind=glob` override as the CLI gives it (`pacman=fairfax-*.zst`).
+    /// Apply a `kind=glob` override as the CLI gives it (`pacman=myapp-*.zst`).
     /// Several overrides for the same kind accumulate.
     pub fn apply_override(&mut self, spec: &str, seen: &mut Vec<InstallKind>) -> Result<(), String> {
         let (k, g) = spec.split_once('=').ok_or_else(|| format!("'{spec}' should look like pacman=GLOB"))?;
@@ -154,31 +154,31 @@ mod tests {
         }
     }
 
-    const FAIRFAX: [&str; 12] = [
-        "fairfax-x86_64.pkg.tar.zst",
-        "fairfax-x86_64.pkg.tar.zst.sha256",
-        "fairfax-amd64.deb",
-        "fairfax-amd64.deb.sha256",
-        "fairfax-x86_64.rpm",
-        "fairfax-x86_64.rpm.sha256",
-        "fairfax-x86_64.AppImage",
-        "fairfax-x86_64.AppImage.sha256",
-        "fairfax-linux-x86_64.tar.gz",
-        "fairfax-linux-x86_64.tar.gz.sha256",
+    const MYAPP: [&str; 12] = [
+        "myapp-x86_64.pkg.tar.zst",
+        "myapp-x86_64.pkg.tar.zst.sha256",
+        "myapp-amd64.deb",
+        "myapp-amd64.deb.sha256",
+        "myapp-x86_64.rpm",
+        "myapp-x86_64.rpm.sha256",
+        "myapp-x86_64.AppImage",
+        "myapp-x86_64.AppImage.sha256",
+        "myapp-linux-x86_64.tar.gz",
+        "myapp-linux-x86_64.tar.gz.sha256",
         "SHA256SUMS",
         "notes.txt",
     ];
 
     #[test]
-    fn fairfax_assets_per_kind() {
-        let r = release(&FAIRFAX);
+    fn myapp_assets_per_kind() {
+        let r = release(&MYAPP);
         let p = AssetPatterns::default();
         let want = [
-            (InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst"),
-            (InstallKind::Deb, "fairfax-amd64.deb"),
-            (InstallKind::Rpm, "fairfax-x86_64.rpm"),
-            (InstallKind::AppImage, "fairfax-x86_64.AppImage"),
-            (InstallKind::Tarball, "fairfax-linux-x86_64.tar.gz"),
+            (InstallKind::Pacman, "myapp-x86_64.pkg.tar.zst"),
+            (InstallKind::Deb, "myapp-amd64.deb"),
+            (InstallKind::Rpm, "myapp-x86_64.rpm"),
+            (InstallKind::AppImage, "myapp-x86_64.AppImage"),
+            (InstallKind::Tarball, "myapp-linux-x86_64.tar.gz"),
         ];
         for (kind, name) in want {
             assert_eq!(select(&r, kind, &p, "x86_64").map(|a| a.name.as_str()), Some(name), "{kind}");

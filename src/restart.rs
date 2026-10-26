@@ -156,9 +156,9 @@ mod tests {
 
     #[test]
     fn old_mount_entries_are_dropped() {
-        let appdir = Some("/tmp/.mount_FairfaXyz");
+        let appdir = Some("/tmp/.mount_MyAppXyz");
         assert_eq!(
-            clean_path_list("/tmp/.mount_FairfaXyz/usr/lib:/usr/lib:/tmp/.mount_other/lib", appdir).as_deref(),
+            clean_path_list("/tmp/.mount_MyAppXyz/usr/lib:/usr/lib:/tmp/.mount_other/lib", appdir).as_deref(),
             Some("/usr/lib")
         );
         assert_eq!(clean_path_list("/opt/appdir/lib:/usr/bin", Some("/opt/appdir")).as_deref(), Some("/usr/bin"));

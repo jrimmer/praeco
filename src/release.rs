@@ -88,7 +88,7 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = r#"[
-      {"tag_name":"v1.0.5","name":"Fairfax 1.0.5","body":"notes","draft":false,"prerelease":false,
+      {"tag_name":"v1.0.5","name":"MyApp 1.0.5","body":"notes","draft":false,"prerelease":false,
        "html_url":"https://x/r/1.0.5","published_at":"2026-10-01T00:00:00Z",
        "assets":[{"name":"a.deb","browser_download_url":"https://x/a.deb","size":3},{"name":"nourl"}]},
       {"tag_name":"v1.1.0-rc1","draft":false,"prerelease":true,"assets":[]},
