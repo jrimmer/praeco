@@ -351,8 +351,13 @@ fn cmd_install(a: &Args) -> Result<()> {
 
 /// Is `exe` inside an AppImage mount (under `appdir`, or a `/tmp/.mount_*`)?
 /// That mount vanishes when the app exits, taking praeco with it.
+///
+/// `APPDIR` counts only when it looks like a mount: a directory named `.mount_*`.
+/// `/`, `/tmp`, the home folder and the like never do, so they cannot make praeco
+/// copy itself again and again.
 pub fn in_appimage_mount(exe: &std::path::Path, appdir: Option<&std::path::Path>) -> bool {
-    exe.to_string_lossy().starts_with("/tmp/.mount_") || appdir.is_some_and(|d| !d.as_os_str().is_empty() && exe.starts_with(d))
+    let mount_like = |d: &std::path::Path| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".mount_"));
+    exe.to_string_lossy().starts_with("/tmp/.mount_") || appdir.is_some_and(|d| mount_like(d) && exe.starts_with(d))
 }
 
 /// When praeco itself lives inside the app's AppImage mount and will outlive the
@@ -360,6 +365,10 @@ pub fn in_appimage_mount(exe: &std::path::Path, appdir: Option<&std::path::Path>
 /// continue from the copy. Replaces the process on success.
 fn relocate_out_of_appimage(a: &Args) -> Result<()> {
     if !(a.restart || a.detach) {
+        return Ok(());
+    }
+    // At most once: the copy carries this marker and never relocates again.
+    if std::env::var_os("PRAECO_SELF_COPY_DIR").is_some() {
         return Ok(());
     }
     let exe = std::env::current_exe()?;
@@ -377,7 +386,10 @@ fn relocate_out_of_appimage(a: &Args) -> Result<()> {
         std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700)).map_err(fail)?;
     }
     use std::os::unix::process::CommandExt;
-    let err = Command::new(&copy).args(&a.raw).env("PRAECO_SELF_COPY_DIR", &dir).exec();
+    let mut cmd = Command::new(&copy);
+    cmd.args(&a.raw).env("PRAECO_SELF_COPY_DIR", &dir);
+    crate::restart::clean_search_paths(&mut cmd);
+    let err = cmd.exec();
     Err(fail(err))
 }
 
@@ -395,6 +407,9 @@ fn remove_self_copy() {
 /// writing its events there, report the path, and return at once.
 fn cmd_detach(a: &Args) -> Result<()> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    // Relocate first (this replaces the process), so a default progress
+    // directory is created exactly once, by the process that keeps it.
+    relocate_out_of_appimage(a)?;
     let path = match &a.progress_file {
         Some(p) => std::path::absolute(p)?,
         None => tempfile::Builder::new().permissions(std::fs::Permissions::from_mode(0o700)).prefix("praeco-progress-").tempdir()?.keep().join("progress.jsonl"),
@@ -407,7 +422,6 @@ fn cmd_detach(a: &Args) -> Result<()> {
             parent.display()
         )));
     }
-    relocate_out_of_appimage(a)?;
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -564,8 +578,10 @@ mod tests {
     fn appimage_mount_detection() {
         use std::path::Path;
         assert!(in_appimage_mount(Path::new("/tmp/.mount_FairfaX1/usr/bin/praeco"), None));
-        assert!(in_appimage_mount(Path::new("/opt/mnt/usr/bin/praeco"), Some(Path::new("/opt/mnt"))));
-        assert!(!in_appimage_mount(Path::new("/usr/bin/praeco"), Some(Path::new("/opt/mnt"))));
+        assert!(in_appimage_mount(Path::new("/run/x/.mount_ab/usr/bin/praeco"), Some(Path::new("/run/x/.mount_ab"))));
+        for appdir in ["/", "/tmp", "/home/u", "/opt/mnt"] {
+            assert!(!in_appimage_mount(Path::new("/tmp/praeco-self-x/praeco"), Some(Path::new(appdir))), "{appdir}");
+        }
         assert!(!in_appimage_mount(Path::new("/usr/bin/praeco"), None));
         assert!(!in_appimage_mount(Path::new("/tmp/mount_x/praeco"), None));
     }

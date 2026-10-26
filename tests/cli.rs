@@ -458,3 +458,77 @@ fn terminal_mode_works_when_praeco_lives_in_a_path_with_spaces() {
     assert_eq!(names.last().map(String::as_str), Some("done"));
     assert_eq!(std::fs::read_to_string(&i.img).unwrap(), "NEW");
 }
+
+#[test]
+fn a_bogus_appdir_never_causes_a_relocation_loop() {
+    let i = appimage_install(b"NEW");
+    let count = || std::fs::read_dir("/tmp").unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("praeco-self-")).count();
+    let before = count();
+    for appdir in ["/tmp", "/", "/usr"] {
+        let mut args = base_args(&i.server, "install").iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for a in ["--version", "1.0.5", "--exe", "/tmp/x/fairfax", "--appdir", appdir, "--appimage", i.img.to_str().unwrap(), "--restart", "--", "/bin/true"] {
+            args.push(a.to_string());
+        }
+        let mut c = praeco();
+        c.args(&args).env("APPDIR", appdir);
+        let child = c.spawn().unwrap();
+        let out = {
+            let mut child = child;
+            let end = Instant::now() + Duration::from_secs(20);
+            loop {
+                if let Some(st) = child.try_wait().unwrap() {
+                    break st;
+                }
+                assert!(Instant::now() < end, "praeco did not finish: relocation loop?");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let _ = out;
+        assert!(count() <= before + 1, "APPDIR={appdir}: {} copies", count() - before);
+    }
+    // Even from inside a real-looking mount, a copy never copies itself again.
+    let mount = PathBuf::from(format!("/tmp/.mount_loop{}", std::process::id()));
+    std::fs::create_dir_all(mount.join("usr/bin")).unwrap();
+    let inside = mount.join("usr/bin/praeco");
+    std::fs::copy(env!("CARGO_BIN_EXE_praeco"), &inside).unwrap();
+    let mut args = base_args(&i.server, "install").iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    for a in ["--version", "1.0.5", "--exe", "/tmp/x/fairfax", "--appimage", i.img.to_str().unwrap(), "--restart", "--", "/bin/true"] {
+        args.push(a.to_string());
+    }
+    let out = Command::new(&inside).args(&args).env_remove("PRAECO_SELF_COPY_DIR").output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let _ = std::fs::remove_dir_all(&mount);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(count() <= before, "the single copy cleaned up after itself");
+}
+
+#[test]
+fn relocation_cleans_search_paths_and_leaves_one_progress_dir() {
+    let i = appimage_install(b"NEW");
+    let mount = PathBuf::from(format!("/tmp/.mount_env{}", std::process::id()));
+    std::fs::create_dir_all(mount.join("usr/bin")).unwrap();
+    let inside = mount.join("usr/bin/praeco");
+    std::fs::copy(env!("CARGO_BIN_EXE_praeco"), &inside).unwrap();
+    let marker = i.tmp.path().join("env");
+    let script = format!("echo \"${{LD_LIBRARY_PATH-unset}}|$QT_PLUGIN_PATH\" > '{}'", marker.display());
+    let progress_dirs = || std::fs::read_dir("/tmp").unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("praeco-progress-")).count();
+    let before = progress_dirs();
+    let mut args = detach_args(&i, &["--detach", "--restart", "--", "sh", "-c", &script]);
+    let ix = args.iter().position(|a| a == "/tmp/.mount_x/usr/bin/fairfax").unwrap();
+    args[ix] = "/tmp/.mount_x/usr/bin/fairfax".into();
+    let out = Command::new(&inside)
+        .args(&args)
+        .env("LD_LIBRARY_PATH", format!("{}/usr/lib", mount.display()))
+        .env("QT_PLUGIN_PATH", format!("{}/p:/usr/lib/qt", mount.display()))
+        .env_remove("PRAECO_SELF_COPY_DIR")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let path = PathBuf::from(json_lines(&out)[0]["progress_file"].as_str().unwrap());
+    wait_for_event(&path, "done");
+    assert!(wait_for(&marker));
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "unset|/usr/lib/qt");
+    assert_eq!(progress_dirs(), before + 1, "exactly one progress directory was created");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    let _ = std::fs::remove_dir_all(&mount);
+}

@@ -65,6 +65,24 @@ pub fn is_running(pid: u32) -> bool {
     }
 }
 
+/// Remove old-mount entries from the search-path variables in `cmd`'s environment.
+pub fn clean_search_paths(cmd: &mut Command) {
+    let appdir = std::env::var("APPDIR").ok();
+    for v in PATH_LIKE_VARS {
+        if let Ok(val) = std::env::var(v) {
+            match clean_path_list(&val, appdir.as_deref()) {
+                Some(clean) if clean == val => {}
+                Some(clean) => {
+                    cmd.env(v, clean);
+                }
+                None => {
+                    cmd.env_remove(v);
+                }
+            }
+        }
+    }
+}
+
 /// Make `cmd` start in a new session (`setsid`): no controlling terminal, not
 /// part of the caller's process group, so it survives the caller and its
 /// terminal. Also restores the default `SIGHUP` action, since an ignored signal
@@ -87,20 +105,7 @@ pub fn launch_detached(argv: &[OsString]) -> Result<()> {
     let Some(prog) = argv.first() else { return Err(fail("There is no command to start the new version with")) };
     let mut cmd = Command::new(prog);
     cmd.args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    let appdir = std::env::var("APPDIR").ok();
-    for v in PATH_LIKE_VARS {
-        if let Ok(val) = std::env::var(v) {
-            match clean_path_list(&val, appdir.as_deref()) {
-                Some(clean) if clean == val => {}
-                Some(clean) => {
-                    cmd.env(v, clean);
-                }
-                None => {
-                    cmd.env_remove(v);
-                }
-            }
-        }
-    }
+    clean_search_paths(&mut cmd);
     for v in STALE_APPIMAGE_VARS {
         cmd.env_remove(v);
     }

@@ -494,3 +494,16 @@ fn forgejo_attachment_urls_work_when_listed() {
     install(&o, &mut |_| {}).unwrap();
     assert_eq!(std::fs::read_to_string(&img).unwrap(), "NEW");
 }
+
+#[test]
+fn pkexec_127_means_no_agent_only_when_it_says_so() {
+    let p = pkg_rig(InstallKind::Pacman, "fairfax-x86_64.pkg.tar.zst", &["pacman"], 127, "Error getting authority: No authentication agent found.");
+    let pk = escalator(&p.r.tmp.path().join("pk"), "pkexec", &p.rec, 127, "Error executing command as another user: No authentication agent found.");
+    let mut o = p.opts();
+    o.escalation = Some(vec![pk.into_os_string()]);
+    assert_eq!(install(&o, &mut |_| {}).unwrap_err().code, ErrorCode::NeedsTerminal);
+
+    let pk = escalator(&p.r.tmp.path().join("pk2"), "pkexec", &p.rec, 127, "Error executing command as another user: Not authorized");
+    o.escalation = Some(vec![pk.into_os_string()]);
+    assert_eq!(install(&o, &mut |_| {}).unwrap_err().code, ErrorCode::AuthFailed);
+}

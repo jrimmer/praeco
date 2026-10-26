@@ -181,6 +181,9 @@ fn run_elevated(escalation: &[OsString], cmd: &[OsString], interactive: bool) ->
         // authentication did not complete (wrong password, no agent after all).
         // The up-front agent check already sent "no agent" to the terminal path.
         Some(126) if via_pkexec => Err(Error::new(ErrorCode::AuthCancelled, "The permission prompt was dismissed, or this account is not allowed to install software. Nothing was installed.")),
+        Some(127) if via_pkexec && detail.to_lowercase().contains("no authentication agent") => {
+            Err(Error::new(ErrorCode::NeedsTerminal, "No polkit authentication agent is available, so a permission prompt cannot appear. Continue in a terminal."))
+        }
         Some(127) if via_pkexec => Err(Error::new(ErrorCode::AuthFailed, "The administrator password was not accepted, or the permission prompt could not finish. Nothing was installed. You can try again or install in a terminal.")),
         code => {
             let code = code.map(|c| format!("exit status {c}")).unwrap_or_else(|| "killed by a signal".into());

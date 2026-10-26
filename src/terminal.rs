@@ -52,8 +52,26 @@ fn known_prefix(name: &str) -> Vec<String> {
     KNOWN.iter().find(|(n, _)| *n == name).map(|(_, p)| p.iter().map(|s| s.to_string()).collect()).unwrap_or_else(|| vec!["-e".into()])
 }
 
+/// Does the program (after resolving symlinks and alternatives such as
+/// `x-terminal-emulator`) turn out to be a terminal without an argv form?
+fn argv_safe(program: &std::path::Path) -> bool {
+    let real = std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
+    let base = real.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let given = program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    !NO_ARGV_FORM.contains(&base.as_str()) && !NO_ARGV_FORM.contains(&given.as_str())
+}
+
+fn known_terminal(env: &Env) -> Option<Terminal> {
+    KNOWN.iter().skip(1).find_map(|(n, p)| {
+        env.which(n)
+            .filter(|program| argv_safe(program))
+            .map(|program| Terminal { name: (*n).into(), program, prefix: p.iter().map(|s| s.to_string()).collect() })
+    })
+}
+
 /// `xdg-terminal-exec` first, then `$TERMINAL` (may carry its own arguments),
-/// then the common terminals in the order above.
+/// then the common terminals in the order above. Terminals without an argv
+/// form are refused even behind a symlink.
 pub fn find_terminal(env: &Env) -> Option<Terminal> {
     if let Some(p) = env.which("xdg-terminal-exec") {
         return Some(Terminal { name: "xdg-terminal-exec".into(), program: p, prefix: Vec::new() });
@@ -63,21 +81,17 @@ pub fn find_terminal(env: &Env) -> Option<Terminal> {
         if let Some(first) = parts.next() {
             let program = if first.contains('/') { Some(PathBuf::from(first)) } else { env.which(first) };
             if let Some(program) = program {
-                let base = program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                if NO_ARGV_FORM.contains(&base.as_str()) {
-                    return KNOWN.iter().skip(1).find_map(|(n, p)| {
-                        env.which(n).map(|program| Terminal { name: (*n).into(), program, prefix: p.iter().map(|s| s.to_string()).collect() })
-                    });
+                if !argv_safe(&program) {
+                    return known_terminal(env);
                 }
+                let base = program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let mut prefix: Vec<String> = parts.map(str::to_string).collect();
                 prefix.extend(known_prefix(&base));
                 return Some(Terminal { name: base, program, prefix });
             }
         }
     }
-    KNOWN.iter().skip(1).find_map(|(n, p)| {
-        env.which(n).map(|program| Terminal { name: (*n).into(), program, prefix: p.iter().map(|s| s.to_string()).collect() })
-    })
+    known_terminal(env)
 }
 
 /// Command line for the worker, mirroring `opts`.
@@ -243,6 +257,18 @@ mod tests {
         assert_eq!(find_terminal(&env(d.path(), Some("tilix"))), None, "nor from $TERMINAL");
         exe(d.path(), "foot");
         assert_eq!(find_terminal(&env(d.path(), Some("tilix"))).unwrap().name, "foot");
+    }
+
+    #[test]
+    fn symlinks_to_unsafe_terminals_are_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let real = exe(d.path(), "lxterminal");
+        std::os::unix::fs::symlink(&real, d.path().join("x-terminal-emulator")).unwrap();
+        std::os::unix::fs::symlink(&real, d.path().join("myterm")).unwrap();
+        assert_eq!(find_terminal(&env(d.path(), None)), None, "x-terminal-emulator -> lxterminal");
+        assert_eq!(find_terminal(&env(d.path(), Some("myterm"))), None, "$TERMINAL symlink -> lxterminal");
+        exe(d.path(), "xterm");
+        assert_eq!(find_terminal(&env(d.path(), Some("myterm"))).unwrap().name, "xterm");
     }
 
     #[test]
