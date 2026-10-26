@@ -12,8 +12,8 @@ calls praeco underneath.
   its JSON.
 - **Rust apps** can use the `praeco` library crate directly, or the CLI.
 
-Linux only, x86_64 today. Nothing is hard-coded to x86_64: asset selection follows
-the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64`, ...).
+Linux only, on x86_64 and aarch64; each release has static binaries for both. Asset
+selection follows the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64`, ...).
 
 ## Contents
 
@@ -514,24 +514,35 @@ In each case praeco is at `<directory of the executable>/../lib/myapp/praeco`, w
 is what the C++ examples above and below use. Look nowhere else, and when the file is
 missing (a source build, say) hide the update UI rather than search for one.
 
-**Building it into a package.** Build a tagged release of praeco from source in the
-app's packaging step and install the binary at that path:
+**Putting it into a package.** Either download a release's static binary and check
+it against its `.sha256` file, which needs no Rust toolchain:
 
 ```sh
-git clone --depth 1 --branch v0.1.0 https://github.com/jrimmer/praeco.git
+v=0.1.1; arch=$(uname -m)        # x86_64 or aarch64
+base=https://github.com/jrimmer/praeco/releases/download/v$v
+curl -fLO "$base/praeco-linux-$arch" -O "$base/praeco-linux-$arch.sha256"
+sha256sum -c "praeco-linux-$arch.sha256"
+install -Dm755 "praeco-linux-$arch" "$pkgdir/usr/lib/myapp/praeco"
+```
+
+or build a tagged release from source:
+
+```sh
+git clone --depth 1 --branch v0.1.1 https://github.com/jrimmer/praeco.git
 (cd praeco && cargo build --locked --release)
 install -Dm755 praeco/target/release/praeco "$pkgdir/usr/lib/myapp/praeco"
 ```
 
-For an Arch package built with makepkg, add `options=(!lto)` to the PKGBUILD:
-makepkg's link-time optimisation flags break the link of praeco's C dependency
-(ring).
+For an Arch package built from source with makepkg, add `options=(!lto)` to the
+PKGBUILD: makepkg's link-time optimisation flags break the link of praeco's C
+dependency (ring).
 
-**Rust apps using the library** pin it in `Cargo.toml` and bump the tag the same way:
+**Rust apps using the library** add it from crates.io (`cargo add praeco`) and bump
+the version the same way:
 
 ```toml
 [dependencies]
-praeco = { git = "https://github.com/jrimmer/praeco", tag = "v0.1.0" }
+praeco = "0.1"
 ```
 
 A Rust app that wants the terminal fallback still ships the `praeco` binary at the
