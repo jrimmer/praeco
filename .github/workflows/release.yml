@@ -51,7 +51,7 @@ jobs:
           cp "target/$TARGET/release/praeco" "dist/$ASSET"
           cd dist
           file "$ASSET"
-          file "$ASSET" | grep -q 'statically linked' || { echo "not a static binary"; exit 1; }
+          file "$ASSET" | grep -Eq 'statically linked|static-pie linked' || { echo "not a static binary"; exit 1; }
           "./$ASSET" --version
           sha256sum "$ASSET" > "$ASSET.sha256"
 
