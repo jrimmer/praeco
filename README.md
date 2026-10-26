@@ -429,8 +429,9 @@ The exit code of the detached run is not available; its last line says how it en
 If praeco itself is inside the app's AppImage mount (under `APPDIR` or `/tmp/.mount_*`),
 that mount disappears when the app quits. With `--detach` or `--restart`, praeco first
 copies itself to a private temporary directory, continues from the copy, and removes the
-copy when done. Where possible, ship praeco outside the mount (install it as its own
-package) and skip the copy.
+copy when done, so an AppImage can carry praeco inside it. A distro package needs no
+copy: it ships praeco outside any mount (see
+[Shipping praeco with your app](#shipping-praeco-with-your-app)).
 
 **C++/Qt, the one pattern to use:**
 
@@ -439,13 +440,15 @@ const QString dir  = QStandardPaths::writableLocation(QStandardPaths::RuntimeLoc
 QDir().mkpath(dir);                                   // yours, mode 0700
 QFile::setPermissions(dir, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
 const QString progress = dir + "/update-" + QUuid::createUuid().toString(QUuid::Id128) + ".jsonl";
+// The praeco this app ships, by full path (see "Shipping praeco with your app").
+const QString praeco = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../lib/myapp/praeco");
 
 QStringList args = {"install", "--github", "you/myapp", "--version", latest,
                     "--exe", QCoreApplication::applicationFilePath(),
                     "--restart-pid", QString::number(QCoreApplication::applicationPid()),
                     "--detach", "--progress-file", progress,
                     "--restart", "--", QCoreApplication::applicationFilePath()};
-QProcess::startDetached("praeco", args);
+QProcess::startDetached(praeco, args);
 
 // Then tail the file with a 200 ms QTimer: remember the read offset, read new
 // complete lines, QJsonDocument::fromJson each one. Stop at "done", "error" or
@@ -457,8 +460,57 @@ The app keeps running while the update downloads and installs; it quits only whe
 sends `SIGTERM`, and the new version starts from the detached copy.
 
 **Rust:** call the library in-process, as shown below, or use the same CLI
-command with `std::process::Command::new("praeco").args(...).spawn()` and tail the
+command with `std::process::Command::new(&praeco).args(...).spawn()`, `praeco` being
+the full path of the binary you ship, and tail the
 progress file the same way. The library path needs no file.
+
+## Shipping praeco with your app
+
+Each app ships its own praeco, pinned to a release tag, and calls it by full path.
+praeco is then updated the same way as the app: to move to a newer praeco, bump the
+pin in an app release. The praeco already installed downloads and installs that
+release, and the new package carries the new praeco. Users never install or update
+praeco themselves.
+
+Do not rely on a praeco shared between apps or found on `PATH`: nothing would keep it
+up to date, one app's update could change another app's updater, and a `PATH` lookup
+runs whatever binary comes first.
+
+**Where to put it.** A private directory of the app, so the path is the same relative
+to the app's executable in every package:
+
+| Package | App | praeco |
+|---------|-----|--------|
+| pacman, deb, rpm | `/usr/bin/myapp` | `/usr/lib/myapp/praeco` |
+| AppImage | `usr/bin/myapp` in the image | `usr/lib/myapp/praeco` in the image |
+| Tarball | `myapp-1.2.0/bin/myapp` | `myapp-1.2.0/lib/myapp/praeco` |
+
+In each case praeco is at `<directory of the executable>/../lib/myapp/praeco`, which
+is what the C++ examples above and below use. Look nowhere else, and when the file is
+missing (a source build, say) hide the update UI rather than search for one.
+
+**Building it into a package.** Build a tagged release of praeco from source in the
+app's packaging step and install the binary at that path:
+
+```sh
+git clone --depth 1 --branch v0.1.0 https://github.com/jrimmer/praeco.git
+(cd praeco && cargo build --locked --release)
+install -Dm755 praeco/target/release/praeco "$pkgdir/usr/lib/myapp/praeco"
+```
+
+For an Arch package built with makepkg, add `options=(!lto)` to the PKGBUILD:
+makepkg's link-time optimisation flags break the link of praeco's C dependency
+(ring).
+
+**Rust apps using the library** pin it in `Cargo.toml` and bump the tag the same way:
+
+```toml
+[dependencies]
+praeco = { git = "https://github.com/jrimmer/praeco", tag = "v0.1.0" }
+```
+
+A Rust app that wants the terminal fallback still ships the `praeco` binary at the
+path above, because terminal mode runs the CLI.
 
 ## Using praeco from an app
 
@@ -467,8 +519,8 @@ progress file the same way. The library path needs no file.
 On startup, now and then, and on "Check for updates":
 
 ```cpp
-QProcess p;
-p.start("praeco", {"check", "--github", "you/myapp", "--current", APP_VERSION,
+QProcess p;   // praeco: the full path of the binary you ship, as above
+p.start(praeco, {"check", "--github", "you/myapp", "--current", APP_VERSION,
                    "--exe", QCoreApplication::applicationFilePath(), "--json"});
 p.waitForFinished(20000);
 auto doc = QJsonDocument::fromJson(p.readAllStandardOutput());   // always valid JSON with --json
