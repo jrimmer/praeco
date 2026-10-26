@@ -163,7 +163,7 @@ pub fn install_via_terminal(opts: &InstallOptions, emit: &mut dyn FnMut(&Event))
                 *worker = Some(pid);
                 None
             }
-            Event::Error { code, message } => Some(Err(Error::new(ErrorCode::from_str(&code), message))),
+            Event::Error { code, message } => Some(Err(Error::new(ErrorCode::from_code(&code), message))),
             Event::NeedsTerminal { message } => Some(Err(Error::new(ErrorCode::InstallFailed, message))),
             Event::Installed { version, kind } => {
                 emit(&Event::Installed { version: version.clone(), kind });
@@ -192,16 +192,15 @@ pub fn install_via_terminal(opts: &InstallOptions, emit: &mut dyn FnMut(&Event))
                 return Err(closed("before the update finished"));
             }
             Some(_) => {}
-            None => match launcher.try_wait() {
-                Ok(Some(status)) => {
+            None => {
+                if let Ok(Some(status)) = launcher.try_wait() {
                     let since = *launcher_gone_at.get_or_insert_with(Instant::now);
                     // Terminal servers (gnome-terminal) return at once; give the window time to appear.
                     if !status.success() || since.elapsed() > Duration::from_secs(20) {
                         return Err(Error::new(ErrorCode::InstallFailed, format!("{} did not start the update. Try installing from a terminal yourself.", term.name)));
                     }
                 }
-                _ => {}
-            },
+            }
         }
         std::thread::sleep(Duration::from_millis(100));
     }

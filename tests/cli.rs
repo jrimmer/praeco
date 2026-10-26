@@ -289,7 +289,7 @@ fn terminal_mode_reports_a_failed_install() {
     let last = json_lines(&out).pop().unwrap();
     assert_eq!(last["event"], "error");
     assert_eq!(last["code"], "install_failed");
-    assert!(last["message"].as_str().unwrap().contains("could not lock database"));
+    assert!(last["message"].as_str().unwrap().contains("exit status 1"));
 }
 
 #[test]

@@ -196,7 +196,7 @@ pub fn escalator(dir: &Path, name: &str, rec: &Path, code: i32, stderr: &str) ->
     write_exec(
         &p,
         &format!(
-            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{rec}'; done\nfor last; do :; done\ncp \"$last\" '{rec}.file' 2>/dev/null\necho '{stderr}' >&2\nexit {code}\n",
+            "#!/bin/sh\nPATH=/usr/bin:/bin\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{rec}'; done\nfor last; do :; done\ncp \"$last\" '{rec}.file' 2>/dev/null\necho '{stderr}' >&2\nexit {code}\n",
             rec = rec.display()
         ),
     );

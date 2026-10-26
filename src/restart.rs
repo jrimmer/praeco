@@ -38,9 +38,8 @@ fn fail(msg: impl Into<String>) -> Error {
 /// Is `pid` a live process? A zombie (exited, not yet reaped) counts as gone.
 pub fn is_running(pid: u32) -> bool {
     let Ok(raw) = i32::try_from(pid) else { return false };
-    match kill(Pid::from_raw(raw), None) {
-        Err(Errno::ESRCH) => return false,
-        Err(_) | Ok(()) => {}
+    if kill(Pid::from_raw(raw), None) == Err(Errno::ESRCH) {
+        return false;
     }
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(stat) => {

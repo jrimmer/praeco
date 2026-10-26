@@ -83,9 +83,9 @@ pub fn find_release<'a>(releases: &'a [Release], want: &str) -> Result<&'a Relea
 ///
 /// - pacman: `pacman -U --noconfirm <file>`
 /// - deb:    `apt-get install -y <file>` (resolves dependencies); `dpkg -i <file>`
-///           when apt-get is not installed
+///   when apt-get is not installed
 /// - rpm:    `dnf install -y <file>` (resolves dependencies); `rpm -U <file>`
-///           when dnf is not installed
+///   when dnf is not installed
 ///
 /// The program is resolved to an absolute path on `env.path`.
 pub fn package_command(kind: InstallKind, file: &Path, env: &Env) -> Result<Vec<OsString>> {

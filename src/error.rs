@@ -47,7 +47,7 @@ impl ErrorCode {
         }
     }
 
-    pub fn from_str(s: &str) -> ErrorCode {
+    pub fn from_code(s: &str) -> ErrorCode {
         const ALL: [ErrorCode; 17] = [
             ErrorCode::Usage,
             ErrorCode::InvalidVersion,
