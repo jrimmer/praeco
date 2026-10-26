@@ -15,6 +15,31 @@ calls praeco underneath.
 Linux only, x86_64 today. Nothing is hard-coded to x86_64: asset selection follows
 the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64`, ...).
 
+## Contents
+
+- [Quick start](#quick-start)
+- [How an update works](#how-an-update-works)
+- [CLI reference](#cli-reference)
+  - [Exit codes](#exit-codes)
+- [JSON formats](#json-formats)
+  - [`check --json`](#check---json)
+  - [`detect`](#detect)
+  - [`install`: JSON lines](#install-json-lines)
+- [Install kinds and the exact commands](#install-kinds-and-the-exact-commands)
+- [Dialog mode, terminal mode and the fallback](#dialog-mode-terminal-mode-and-the-fallback)
+- [Restart](#restart)
+  - [Launching praeco from an app](#launching-praeco-from-an-app)
+- [Shipping praeco with your app](#shipping-praeco-with-your-app)
+- [Using praeco from an app](#using-praeco-from-an-app)
+  - [C++/Qt (or any language): call the CLI](#cqt-or-any-language-call-the-cli)
+  - [Rust: use the library](#rust-use-the-library)
+  - [What the app should show](#what-the-app-should-show)
+- [Library API](#library-api)
+- [Security](#security)
+- [Limitations](#limitations)
+- [Building and testing](#building-and-testing)
+- [License](#license)
+
 ## Quick start
 
 ```sh
