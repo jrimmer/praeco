@@ -146,7 +146,7 @@ fn install_appimage_then_restart_prints_json_lines() {
         .args(["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/fairfax", "--appimage", i.img.to_str().unwrap()])
         .args(["--restart-pid", &old.id().to_string(), "--restart", "--", "sh", "-c", &script])
         .env("APPIMAGE", "/stale/old.AppImage")
-        .env("APPDIR", "/stale/mount")
+        .env("APPDIR", "/tmp/.mount_x")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
