@@ -196,6 +196,32 @@ pub fn save(env: &Env, app: &App) -> Result<PathBuf> {
     Ok(path)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Removal {
+    Removed(PathBuf),
+    /// There was no registration under that name.
+    NotRegistered,
+    /// Only a system (package) registration exists; the package owns it.
+    SystemOnly(PathBuf),
+}
+
+/// Delete the user's registration for `name`.
+pub fn remove(env: &Env, name: &str) -> Result<Removal> {
+    if !valid_name(name) {
+        return Err(Error::new(ErrorCode::Usage, format!("'{name}' is not a usable app name")));
+    }
+    let dir = user_dir(env).ok_or_else(|| Error::new(ErrorCode::Io, "Could not find your config folder (HOME is not set)"))?;
+    let file = dir.join(format!("{name}.json"));
+    match std::fs::remove_file(&file) {
+        Ok(()) => Ok(Removal::Removed(file)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let system = system_dir().join(format!("{name}.json"));
+            Ok(if system.exists() { Removal::SystemOnly(system) } else { Removal::NotRegistered })
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// The first version number in a program's output: a token like `1.2.3`,
 /// `v1.2` or `2.0.1-rc1`. A bare integer does not count (`Qt 6`).
 pub fn parse_version_output(text: &str) -> Option<String> {

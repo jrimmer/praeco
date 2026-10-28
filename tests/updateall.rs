@@ -284,3 +284,67 @@ fn only_needs_terminal_falls_through_to_the_next_attempt() {
     let r: Result<(), _> = first_that_works(&steps, |_, _| Err(Error::new(ErrorCode::NeedsTerminal, "still none")));
     assert_eq!(r.unwrap_err().code, ErrorCode::NeedsTerminal, "the last attempt's error is reported");
 }
+
+fn remove(h: &Home, name: &str, extra: &[&str]) -> Value {
+    let out = h.praeco("omarchy").args(["init", "--remove", "--name", name, "--json"]).args(extra).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    json(&out)
+}
+
+#[test]
+fn remove_unregisters_and_takes_the_hook_out_with_the_last_app() {
+    let h = Home::new();
+    let s = FakeServer::start();
+    let (one, two) = (h.script_app("one", "1.0.0"), h.script_app("two", "1.0.0"));
+    init(&h, "omarchy", "one", &s, "--exe", &one);
+    init(&h, "omarchy", "two", &s, "--exe", &two);
+    let hook = h.dir().join(".config/omarchy/hooks/post-update.d/50-praeco");
+    assert!(hook.is_file());
+
+    let v = remove(&h, "one", &[]);
+    assert_eq!(v["removed"], true);
+    assert_eq!(v["registry_file"], h.registry_file("one").to_str().unwrap());
+    assert!(!h.registry_file("one").exists() && h.registry_file("two").exists());
+    assert_eq!(v["hook"]["status"], "kept");
+    assert!(v["hook"]["reason"].as_str().unwrap().contains("1 other app is still registered"), "{v}");
+    assert!(hook.is_file(), "another app still needs the hook");
+
+    let v = remove(&h, "two", &[]);
+    assert_eq!(v["hook"]["status"], "removed");
+    assert!(!hook.exists());
+    assert!(!h.registry_file("two").exists());
+
+    let v = remove(&h, "two", &[]);
+    assert_eq!(v["removed"], false, "removing twice is not an error");
+    assert_eq!(v["hook"]["status"], "not_present");
+}
+
+#[test]
+fn remove_respects_hook_none_foreign_hooks_and_system_registrations() {
+    let h = Home::new();
+    let s = FakeServer::start();
+    let exe = h.script_app("one", "1.0.0");
+    init(&h, "omarchy", "one", &s, "--exe", &exe);
+    let hook = h.dir().join(".config/omarchy/hooks/post-update.d/50-praeco");
+    let v = remove(&h, "one", &["--hook", "none"]);
+    assert_eq!(v["hook"]["status"], "kept");
+    assert!(hook.is_file(), "--hook none leaves the hook alone");
+
+    std::fs::write(&hook, "#!/bin/bash\necho mine\n").unwrap();
+    let v = remove(&h, "one", &[]);
+    assert_eq!(v["hook"]["status"], "kept");
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), "#!/bin/bash\necho mine\n", "not ours, not deleted");
+
+    let sys = h.tmp.path().join("sys");
+    std::fs::create_dir_all(&sys).unwrap();
+    std::fs::write(sys.join("pkgapp.json"), "{}").unwrap();
+    let out = h.praeco("omarchy").args(["init", "--remove", "--name", "pkgapp"]).env("PRAECO_SYSTEM_APPS_DIR", &sys).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("registered by the system"), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(sys.join("pkgapp.json").exists(), "a package's registration is never deleted");
+
+    for bad in [vec!["init", "--remove"], vec!["init", "--remove", "--name", "../x"], vec!["init", "--remove", "--name", "x", "--hook", "maybe"]] {
+        let out = h.praeco("omarchy").args(&bad).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{bad:?}");
+    }
+}

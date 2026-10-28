@@ -1,6 +1,6 @@
 mod common;
 use common::*;
-use praeco::hook::{ensure_omarchy_hook, is_omarchy, HookOutcome};
+use praeco::hook::{ensure_omarchy_hook, is_omarchy, remove_omarchy_hook, HookOutcome, RemoveOutcome};
 use praeco::registry::{self, App, SourceSpec};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -187,4 +187,77 @@ fn hook_is_not_written_elsewhere_or_for_a_vanishing_praeco() {
         assert!(reason.contains("may not exist"), "{reason}");
     }
     assert!(!hook_dir.exists(), "nothing was written");
+}
+
+#[test]
+fn remove_deletes_only_the_users_registration() {
+    let r = rig();
+    registry::save(&r.env, &app("myapp", Path::new("/usr/bin/myapp"))).unwrap();
+    registry::save(&r.env, &app("keep", Path::new("/usr/bin/keep"))).unwrap();
+    let file = r.home.join(".config/praeco/apps.d/myapp.json");
+    assert_eq!(registry::remove(&r.env, "myapp").unwrap(), registry::Removal::Removed(file.clone()));
+    assert!(!file.exists());
+    assert_eq!(registry::load(&r.env).apps.len(), 1);
+    assert_eq!(registry::remove(&r.env, "myapp").unwrap(), registry::Removal::NotRegistered, "removing twice is fine");
+    for bad in ["../keep", "a/b", "", ".hidden"] {
+        assert!(registry::remove(&r.env, bad).is_err(), "{bad:?}");
+    }
+    assert_eq!(registry::load(&r.env).apps.len(), 1, "nothing else was touched");
+}
+
+/// A stand-in for Omarchy's installer. It writes only where `dest` says: a test must never
+/// reach the real home folder.
+fn hook_tool(r: &Rig, dest: &Path, exit: i32) -> PathBuf {
+    let bin = r.env.trusted_dirs[0].clone();
+    let log = bin.join("hook-install.log");
+    write_exec(
+        &bin.join("omarchy-hook-install"),
+        &format!("#!/bin/sh\necho \"$1\" >> '{log}'\nmkdir -p '{d}'\ncp \"$2\" '{d}/'\nchmod 755 '{d}/'\"$(basename \"$2\")\"\necho \"Installed $1 hook: {d}/$(basename \"$2\")\"\nexit {exit}\n", log = log.display(), d = dest.display()),
+    );
+    log
+}
+
+#[test]
+fn hook_uses_omarchy_hook_install_when_present_and_follows_the_path_it_reports() {
+    let r = rig();
+    let osr = os_release(&r, "omarchy");
+    let moved = r.home.join("moved-hooks/post-update.d");
+    let log = hook_tool(&r, &moved, 0);
+    let praeco = Path::new("/usr/local/bin/praeco");
+    let HookOutcome::Installed { path } = ensure_omarchy_hook(&r.env, praeco, &osr).unwrap() else { panic!("expected Installed") };
+    assert_eq!(path, moved.join("50-praeco"), "the path Omarchy's tool reported");
+    assert_eq!(std::fs::read_to_string(&log).unwrap().trim(), "post-update");
+    assert!(std::fs::read_to_string(&path).unwrap().contains("praeco-managed"));
+    assert!(!r.home.join(".config/omarchy").exists(), "no second copy at the default place");
+}
+
+#[test]
+fn hook_falls_back_to_writing_it_when_the_omarchy_tool_fails_or_wrote_something_else() {
+    let r = rig();
+    let osr = os_release(&r, "omarchy");
+    let praeco = Path::new("/usr/local/bin/praeco");
+    let default = r.home.join(".config/omarchy/hooks/post-update.d/50-praeco");
+
+    hook_tool(&r, &r.home.join("elsewhere"), 1);
+    assert_eq!(ensure_omarchy_hook(&r.env, praeco, &osr).unwrap(), HookOutcome::Installed { path: default.clone() }, "tool failed");
+    std::fs::remove_file(&default).unwrap();
+
+    write_exec(&r.env.trusted_dirs[0].join("omarchy-hook-install"), "#!/bin/sh\necho \"Installed post-update hook: /nonexistent/50-praeco\"\n");
+    assert_eq!(ensure_omarchy_hook(&r.env, praeco, &osr).unwrap(), HookOutcome::Installed { path: default.clone() }, "tool reported a file that is not there");
+    assert!(std::fs::read_to_string(&default).unwrap().contains("'/usr/local/bin/praeco' update-all"));
+}
+
+#[test]
+fn removing_the_hook_takes_only_what_praeco_wrote() {
+    let r = rig();
+    let osr = os_release(&r, "omarchy");
+    let hook = r.home.join(".config/omarchy/hooks/post-update.d/50-praeco");
+    assert_eq!(remove_omarchy_hook(&r.env).unwrap(), RemoveOutcome::NotPresent);
+    ensure_omarchy_hook(&r.env, Path::new("/usr/local/bin/praeco"), &osr).unwrap();
+    assert_eq!(remove_omarchy_hook(&r.env).unwrap(), RemoveOutcome::Removed { path: hook.clone() });
+    assert!(!hook.exists());
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/bash\necho mine\n").unwrap();
+    assert!(matches!(remove_omarchy_hook(&r.env).unwrap(), RemoveOutcome::Kept { .. }));
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), "#!/bin/bash\necho mine\n", "a foreign file is never deleted");
 }

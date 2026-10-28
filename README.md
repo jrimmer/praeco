@@ -95,6 +95,7 @@ praeco install SOURCE --version VERSION --exe PATH [--mode dialog|terminal]
                [--restart-pid PID] [--restart -- COMMAND [ARGS...]]
 praeco detect  --exe PATH
 praeco init    --name NAME SOURCE (--exe PATH | --appimage PATH) [--version-arg ARG]... [--hook auto|none] [--json]
+praeco init    --remove --name NAME [--hook auto|none] [--json]
 praeco update-all [--mode auto|inline|dialog|terminal] [--json]
 praeco --help | --version
 ```
@@ -511,6 +512,13 @@ there is one. Run it again to change anything; it replaces the registration.
 `--version`); `--prereleases` and `--asset-pattern` work as elsewhere; `--hook none`
 skips the system hook; `--json` prints one object.
 
+`praeco init --remove --name myapp` is the way out: it deletes the registration and,
+when no app is registered any more, the system hook praeco added. Call it when the
+user turns "update with the system" off or the app is uninstalled. Removing a name
+that is not registered is not an error, a registration owned by a system package is
+never deleted (remove the package instead), and a hook file praeco did not write is
+never touched.
+
 ```sh
 praeco update-all                  # every registered app, silently
 praeco update-all --mode inline    # sudo in this terminal
@@ -540,9 +548,11 @@ answer and stops that app.
 **Omarchy.** `praeco init` adds `~/.config/omarchy/hooks/post-update.d/50-praeco`
 (recognised by `ID=omarchy` in `/etc/os-release`), so `omarchy update` also runs
 `praeco update-all` with the password it already took. The hook is one shared file
-that calls praeco by full path; `init` rewrites it if praeco moved, never replaces a
-file of the same name that praeco did not write, and refuses to point it at a praeco
-inside an AppImage mount or `/tmp`. A failing hook never stops the system update.
+that calls praeco by full path. It is installed with Omarchy's own
+`omarchy-hook-install` when that is on your `PATH` (praeco follows the path the tool
+reports and checks the file is right), and written directly otherwise. `init`
+rewrites it if praeco moved, never replaces a file of the same name that praeco did
+not write, and refuses to point it at a praeco inside an AppImage mount or `/tmp`. A failing hook never stops the system update.
 Deleting the file undoes it. Other systems get no hook yet; `update-all` still works
 when run by hand or from your own timer.
 
@@ -776,7 +786,7 @@ Privilege handling:
 - Private repositories are not supported: asset downloads carry no credentials.
 - Only the first page of releases is read.
 - `update-all` reads versions by running each app's version command; it does not
-  restart apps, and registrations are never removed automatically.
+  restart apps, and registrations are removed only by `praeco init --remove`.
 - The system hook exists for Omarchy only.
 - No delta updates, no rollback, no signature checks.
 

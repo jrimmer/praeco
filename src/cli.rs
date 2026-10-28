@@ -32,6 +32,7 @@ USAGE
                  [--restart-pid PID] [--restart -- COMMAND [ARGS...]]
   praeco detect  --exe PATH
   praeco init    --name NAME SOURCE (--exe PATH | --appimage PATH) [--version-arg ARG]... [--hook auto|none] [--json]
+  praeco init    --remove --name NAME [--hook auto|none] [--json]
   praeco update-all [--mode auto|inline|dialog|terminal] [--json]
   praeco --help | --version
 
@@ -79,6 +80,9 @@ init OPTIONS
   --hook auto|none         auto (default): also add praeco to the system's update command
                            where there is one (Omarchy: `omarchy update`)
 
+  --remove                 take the app back out: delete its registration and, when no app is
+                           left, the system hook praeco added
+
 update-all OPTIONS
   --mode auto|inline|dialog|terminal
                            how to get administrator rights; auto (default): sudo in this
@@ -122,6 +126,7 @@ struct Args {
     name: Option<String>,
     version_args: Vec<String>,
     hook: Option<String>,
+    remove: bool,
 }
 
 fn usage(msg: impl Into<String>) -> Error {
@@ -185,6 +190,7 @@ fn parse(args: Vec<OsString>) -> Result<Args> {
             "--name" => a.name = Some(text(value(&mut it)?)),
             "--version-arg" => a.version_args.push(text(value(&mut it)?)),
             "--hook" => a.hook = Some(text(value(&mut it)?)),
+            "--remove" => a.remove = true,
             _ => return Err(usage(format!("Unknown option {flag}. Try praeco --help."))),
         }
     }
@@ -396,6 +402,9 @@ struct InitOut<'a> {
 /// `praeco init`: register an app so `update-all` keeps it current, and add
 /// praeco to the system's own update command where there is one.
 fn cmd_init(a: &Args) -> Result<()> {
+    if a.remove {
+        return cmd_init_remove(a);
+    }
     let name = a.need(&a.name, "--name")?;
     let source = a.source()?;
     let hook_mode = match a.hook.as_deref() {
@@ -452,6 +461,56 @@ fn cmd_init(a: &Args) -> Result<()> {
         hook::HookOutcome::Current { path } => println!("praeco is already part of the system update command ({}).", path.display()),
         hook::HookOutcome::Skipped { reason } => println!("Did not add praeco to the system update command: {reason}"),
         hook::HookOutcome::NotApplicable => {}
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct RemoveOut {
+    ok: bool,
+    name: String,
+    removed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registry_file: Option<String>,
+    hook: hook::RemoveOutcome,
+}
+
+/// `praeco init --remove`: the way out. Deletes the registration; when no app
+/// is registered any more, also the system hook praeco added.
+fn cmd_init_remove(a: &Args) -> Result<()> {
+    let name = a.need(&a.name, "--name")?;
+    let hook_mode = match a.hook.as_deref() {
+        None | Some("auto") => true,
+        Some("none") => false,
+        Some(other) => return Err(usage(format!("'{other}' is not a hook mode; use auto or none"))),
+    };
+    let env = a.env();
+    let removal = registry::remove(&env, &name)?;
+    let left = registry::load(&env).apps.len();
+    let hook = if !hook_mode {
+        hook::RemoveOutcome::Kept { reason: "--hook none".into() }
+    } else if left > 0 {
+        hook::RemoveOutcome::Kept { reason: format!("{left} other app{} still registered", if left == 1 { " is" } else { "s are" }) }
+    } else {
+        hook::remove_omarchy_hook(&env)?
+    };
+    let (removed, registry_file) = match &removal {
+        registry::Removal::Removed(p) => (true, Some(p.display().to_string())),
+        registry::Removal::NotRegistered | registry::Removal::SystemOnly(_) => (false, None),
+    };
+    if a.json {
+        out_line(&serde_json::to_string(&RemoveOut { ok: true, name, removed, registry_file, hook }).expect("serialises"));
+        return Ok(());
+    }
+    match &removal {
+        registry::Removal::Removed(p) => println!("Removed {name} ({}).", p.display()),
+        registry::Removal::NotRegistered => println!("{name} was not registered."),
+        registry::Removal::SystemOnly(p) => println!("{name} is registered by the system ({}); remove the package that installed it.", p.display()),
+    }
+    match hook {
+        hook::RemoveOutcome::Removed { path } => println!("Removed praeco from the system update command ({}).", path.display()),
+        hook::RemoveOutcome::Kept { reason } => println!("Left the system update command in place: {reason}."),
+        hook::RemoveOutcome::NotPresent => {}
     }
     Ok(())
 }

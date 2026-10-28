@@ -1,16 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-10-28)
 
 - New `praeco init`: an app registers itself once (name, source, executable) and
   praeco adds itself to the system's update command where there is one.
 - New `praeco update-all`: updates every registered app silently, one failure never
   stopping the others, with sudo from the current terminal when there is one.
+- `praeco init --remove --name NAME` takes an app back out, and the system hook with
+  the last one. Files praeco did not write are never deleted.
 - On Omarchy, `praeco init` adds a `post-update` hook, so `omarchy update` also
-  updates the registered apps with the password it already asked for.
+  updates the registered apps with the password it already asked for. The hook is
+  installed with `omarchy-hook-install` when it is available.
 - Dialog mode now recognises the polkit agent that Omarchy and other Quickshell
   desktops run inside the `quickshell` process, so installs there show the
   desktop's permission prompt instead of falling back to a terminal.
+- Library: `detect::Env` has a new public field, `config_home` (`XDG_CONFIG_HOME`).
+  Code that builds an `Env` by hand must set it; `Env::from_process()` does.
 
 ## 0.1.1 (2026-10-26)
 
