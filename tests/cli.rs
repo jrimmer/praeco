@@ -518,13 +518,17 @@ fn relocation_cleans_search_paths_and_leaves_one_progress_dir() {
     std::fs::copy(env!("CARGO_BIN_EXE_praeco"), &inside).unwrap();
     let marker = i.tmp.path().join("env");
     let script = format!("echo \"${{LD_LIBRARY_PATH-unset}}|$QT_PLUGIN_PATH\" > '{}'", marker.display());
-    let progress_dirs = || std::fs::read_dir("/tmp").unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("praeco-progress-")).count();
+    // A private TMPDIR for the run, so parallel tests' progress directories in /tmp are not counted.
+    let private_tmp = i.tmp.path().join("tmpdir");
+    std::fs::create_dir(&private_tmp).unwrap();
+    let progress_dirs = || std::fs::read_dir(&private_tmp).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("praeco-progress-")).count();
     let before = progress_dirs();
     let mut args = detach_args(&i, &["--detach", "--restart", "--", "sh", "-c", &script]);
     let ix = args.iter().position(|a| a == "/tmp/.mount_x/usr/bin/myapp").unwrap();
     args[ix] = "/tmp/.mount_x/usr/bin/myapp".into();
     let out = Command::new(&inside)
         .args(&args)
+        .env("TMPDIR", &private_tmp)
         .env("LD_LIBRARY_PATH", format!("{}/usr/lib", mount.display()))
         .env("QT_PLUGIN_PATH", format!("{}/p:/usr/lib/qt", mount.display()))
         .env_remove("PRAECO_SELF_COPY_DIR")
