@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Dialog mode now recognises the polkit agent that Omarchy and other Quickshell
+  desktops run inside the `quickshell` process, so installs there show the
+  desktop's permission prompt instead of falling back to a terminal.
+
 ## 0.1.1 (2026-10-26)
 
 Packaging and documentation only; praeco behaves as in 0.1.0.

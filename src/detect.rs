@@ -231,8 +231,11 @@ pub fn detect(env: &Env, exe: &Path) -> Detection {
 
 /// Is a polkit authentication agent running in this session? A heuristic: look
 /// for a process whose name says so. `polkitd` is the daemon, not an agent.
+/// `quickshell` hosts the agent in Omarchy and other Quickshell desktops; a
+/// Quickshell setup without one is caught later, when `pkexec` reports that it
+/// found no agent, and the install continues in a terminal.
 pub fn polkit_agent_running(env: &Env) -> bool {
-    const EMBEDDED: [&str; 3] = ["gnome-shell", "cinnamon", "cosmic-osd"];
+    const EMBEDDED: [&str; 4] = ["gnome-shell", "cinnamon", "cosmic-osd", "quickshell"];
     let Ok(rd) = std::fs::read_dir(&env.proc_root) else { return false };
     for ent in rd.flatten() {
         let name = ent.file_name();

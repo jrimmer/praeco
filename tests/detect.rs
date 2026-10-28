@@ -127,4 +127,7 @@ fn polkit_agent_probe() {
     std::fs::remove_dir_all(proc.join("300")).unwrap();
     mk("301", "gnome-shell");
     assert!(polkit_agent_running(&env));
+    std::fs::remove_dir_all(proc.join("301")).unwrap();
+    mk("302", "quickshell");
+    assert!(polkit_agent_running(&env), "Omarchy's shell hosts the agent");
 }
