@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- New `praeco init`: an app registers itself once (name, source, executable) and
+  praeco adds itself to the system's update command where there is one.
+- New `praeco update-all`: updates every registered app silently, one failure never
+  stopping the others, with sudo from the current terminal when there is one.
+- On Omarchy, `praeco init` adds a `post-update` hook, so `omarchy update` also
+  updates the registered apps with the password it already asked for.
 - Dialog mode now recognises the polkit agent that Omarchy and other Quickshell
   desktops run inside the `quickshell` process, so installs there show the
   desktop's permission prompt instead of falling back to a terminal.

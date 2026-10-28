@@ -72,6 +72,8 @@ pub struct Env {
     /// `APPDIR`: where an AppImage is mounted.
     pub appdir: Option<PathBuf>,
     pub home: Option<PathBuf>,
+    /// `XDG_CONFIG_HOME`, when set to an absolute path.
+    pub config_home: Option<PathBuf>,
     pub euid: u32,
     /// A graphical session is present (`WAYLAND_DISPLAY` or `DISPLAY` set).
     pub graphical: bool,
@@ -108,6 +110,7 @@ impl Env {
             appimage: var("APPIMAGE").map(PathBuf::from),
             appdir: var("APPDIR").map(PathBuf::from),
             home: var("HOME").map(PathBuf::from),
+            config_home: var("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()),
             euid: nix::unistd::geteuid().as_raw(),
             graphical: var("WAYLAND_DISPLAY").is_some() || var("DISPLAY").is_some(),
             proc_root: PathBuf::from("/proc"),

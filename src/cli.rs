@@ -5,13 +5,16 @@ use crate::assets::AssetPatterns;
 use crate::check::{self, CheckOptions, CheckResult};
 use crate::detect::{Env, InstallKind};
 use crate::error::{Error, ErrorCode, Result};
+use crate::hook;
 use crate::http::Http;
 use crate::install::{self, InstallInfo, InstallOptions, Mode};
 use crate::notes::DEFAULT_MARKER;
 use crate::progress::Event;
+use crate::registry;
 use crate::restart::RestartSpec;
 use crate::source::Source;
 use crate::update;
+use crate::updateall;
 use serde::Serialize;
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt as _;
@@ -28,6 +31,8 @@ USAGE
   praeco install SOURCE --version VERSION --exe PATH [--mode dialog|terminal]
                  [--restart-pid PID] [--restart -- COMMAND [ARGS...]]
   praeco detect  --exe PATH
+  praeco init    --name NAME SOURCE (--exe PATH | --appimage PATH) [--version-arg ARG]... [--hook auto|none] [--json]
+  praeco update-all [--mode auto|inline|dialog|terminal] [--json]
   praeco --help | --version
 
 SOURCE (one of)
@@ -65,6 +70,21 @@ install OPTIONS
                            0600 in a directory only you can write to. Default: a new private
                            temporary directory (its path is printed in the `detached` event).
 
+init OPTIONS
+  --name NAME              the app's registry name (letters, digits, . _ -)
+  --exe PATH               the app's executable; or --appimage PATH for the .AppImage file
+                           (default: $APPIMAGE when set)
+  --version-arg ARG        argument that makes the app print its version (repeatable;
+                           default: --version)
+  --hook auto|none         auto (default): also add praeco to the system's update command
+                           where there is one (Omarchy: `omarchy update`)
+
+update-all OPTIONS
+  --mode auto|inline|dialog|terminal
+                           how to get administrator rights; auto (default): sudo in this
+                           terminal if there is one, else the permission prompt, else a
+                           terminal window. Never asks whether to update.
+
 EXIT CODES
   0 success (check: also when no update exists)   3 needs_terminal (retry with --mode terminal)
   1 failure (network, API, checksum, install)     4 unsupported install (source build)
@@ -99,6 +119,9 @@ struct Args {
     events_file: Option<PathBuf>,
     appimage: Option<PathBuf>,
     appdir: Option<PathBuf>,
+    name: Option<String>,
+    version_args: Vec<String>,
+    hook: Option<String>,
 }
 
 fn usage(msg: impl Into<String>) -> Error {
@@ -159,6 +182,9 @@ fn parse(args: Vec<OsString>) -> Result<Args> {
             "--events-file" => a.events_file = Some(PathBuf::from(value(&mut it)?)),
             "--appimage" => a.appimage = Some(PathBuf::from(value(&mut it)?)),
             "--appdir" => a.appdir = Some(PathBuf::from(value(&mut it)?)),
+            "--name" => a.name = Some(text(value(&mut it)?)),
+            "--version-arg" => a.version_args.push(text(value(&mut it)?)),
+            "--hook" => a.hook = Some(text(value(&mut it)?)),
             _ => return Err(usage(format!("Unknown option {flag}. Try praeco --help."))),
         }
     }
@@ -301,12 +327,7 @@ fn install_options(a: &Args, mode: Mode, in_terminal: bool) -> Result<InstallOpt
     o.include_prereleases = a.prereleases;
     o.token = a.token();
     o.env = a.env();
-    // Test seam, compiled into debug builds only: a release binary always
-    // escalates with pkexec or sudo.
-    #[cfg(debug_assertions)]
-    if let Some(cmd) = std::env::var("PRAECO_ESCALATION_CMD").ok().filter(|c| !c.trim().is_empty()) {
-        o.escalation = Some(cmd.split_whitespace().map(OsString::from).collect());
-    }
+    o.escalation = escalation_override();
     Ok(o)
 }
 
@@ -347,6 +368,128 @@ fn cmd_install(a: &Args) -> Result<()> {
     };
     remove_self_copy();
     result
+}
+
+
+/// Test seam, compiled into debug builds only: a release binary always
+/// escalates with pkexec or sudo.
+fn escalation_override() -> Option<Vec<OsString>> {
+    #[cfg(debug_assertions)]
+    if let Some(cmd) = std::env::var("PRAECO_ESCALATION_CMD").ok().filter(|c| !c.trim().is_empty()) {
+        return Some(cmd.split_whitespace().map(OsString::from).collect());
+    }
+    None
+}
+
+#[derive(Serialize)]
+struct InitOut<'a> {
+    ok: bool,
+    app: &'a registry::App,
+    registry_file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_error: Option<String>,
+    hook: hook::HookOutcome,
+}
+
+/// `praeco init`: register an app so `update-all` keeps it current, and add
+/// praeco to the system's own update command where there is one.
+fn cmd_init(a: &Args) -> Result<()> {
+    let name = a.need(&a.name, "--name")?;
+    let source = a.source()?;
+    let hook_mode = match a.hook.as_deref() {
+        None | Some("auto") => true,
+        Some("none") => false,
+        Some(other) => return Err(usage(format!("'{other}' is not a hook mode; use auto or none"))),
+    };
+    let env = a.env();
+    let inside_appimage = |exe: &std::path::Path| env.appdir.as_ref().is_some_and(|d| exe.starts_with(d));
+    let (exe, appimage) = match (&env.appimage, &a.exe) {
+        (Some(img), None) => (img.clone(), true),
+        (Some(img), Some(exe)) if inside_appimage(exe) => (img.clone(), true),
+        (_, Some(exe)) => (exe.clone(), false),
+        (None, None) => return Err(usage("praeco init needs --exe PATH (or --appimage PATH)")),
+    };
+    let exe = std::path::absolute(exe)?;
+    let spec = if let Some(g) = &a.github {
+        registry::SourceSpec::Github { repo: g.clone(), api_base: a.github_api_base.clone() }
+    } else {
+        let (base, repo) = a.forgejo.clone().expect("source() accepted a forgejo source");
+        registry::SourceSpec::Forgejo { base, repo }
+    };
+    drop(source);
+    let mut version_cmd = vec![exe.to_string_lossy().into_owned()];
+    if a.version_args.is_empty() {
+        version_cmd.push("--version".into());
+    } else {
+        version_cmd.extend(a.version_args.iter().cloned());
+    }
+    let app = registry::App { name, source: spec, exe, appimage, version_cmd, prereleases: a.prereleases, asset_patterns: a.patterns.clone() };
+    let registry_file = registry::save(&env, &app)?;
+    let (version, version_error) = match registry::installed_version(&app) {
+        Ok(v) => (Some(v), None),
+        Err(e) => (None, Some(e.message)),
+    };
+    let hook = if hook_mode {
+        hook::ensure_omarchy_hook(&env, &std::env::current_exe()?, &hook::os_release_path())?
+    } else {
+        hook::HookOutcome::NotApplicable
+    };
+    if a.json {
+        let out = InitOut { ok: true, app: &app, registry_file: registry_file.display().to_string(), version, version_error, hook };
+        out_line(&serde_json::to_string(&out).expect("serialises"));
+        return Ok(());
+    }
+    println!("Registered {} ({}).", app.name, registry_file.display());
+    match (&version, &version_error) {
+        (Some(v), _) => println!("Installed version: {v}."),
+        (_, Some(e)) => println!("Warning: {e}"),
+        _ => {}
+    }
+    match hook {
+        hook::HookOutcome::Installed { path } => println!("Added praeco to the system update command ({}).", path.display()),
+        hook::HookOutcome::Current { path } => println!("praeco is already part of the system update command ({}).", path.display()),
+        hook::HookOutcome::Skipped { reason } => println!("Did not add praeco to the system update command: {reason}"),
+        hook::HookOutcome::NotApplicable => {}
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct UpdateAllOut<'a> {
+    ok: bool,
+    apps: &'a [updateall::AppResult],
+    problems: &'a [String],
+}
+
+/// `praeco update-all`; returns whether every app is fine.
+fn cmd_update_all(a: &Args) -> Result<bool> {
+    let mode = match a.mode.as_deref() {
+        None => updateall::UpdateMode::Auto,
+        Some(m) => updateall::UpdateMode::parse(m).ok_or_else(|| usage(format!("'{m}' is not a mode; use auto, inline, dialog or terminal")))?,
+    };
+    let env = a.env();
+    let reg = registry::load(&env);
+    for p in &reg.problems {
+        eprintln!("praeco: {p}");
+    }
+    if reg.apps.is_empty() && !a.json {
+        println!("No apps are registered with praeco.");
+    }
+    let opts = updateall::Options { mode, stdin_is_tty: std::io::IsTerminal::is_terminal(&std::io::stdin()), env, token: a.token(), escalation: escalation_override() };
+    ignore_hangup();
+    let json = a.json;
+    let results = updateall::run(&reg, &opts, &mut |line| {
+        if !json {
+            println!("{line}");
+        }
+    });
+    let all_ok = results.iter().all(|r| r.status != updateall::Status::Failed);
+    if json {
+        out_line(&serde_json::to_string(&UpdateAllOut { ok: all_ok, apps: &results, problems: &reg.problems }).expect("serialises"));
+    }
+    Ok(all_ok)
 }
 
 /// Is `exe` inside an AppImage mount (under `appdir`, or a `/tmp/.mount_*`)?
@@ -516,13 +659,21 @@ pub fn run(args: Vec<OsString>) -> i32 {
         "check" => cmd_check(&a),
         "install" => cmd_install(&a),
         "detect" => cmd_detect(&a),
+        "init" => cmd_init(&a),
+        "update-all" => cmd_update_all(&a).and_then(|all_ok| {
+            if all_ok {
+                Ok(())
+            } else {
+                Err(Error::new(ErrorCode::InstallFailed, "Some apps could not be updated"))
+            }
+        }),
         other => Err(usage(format!("Unknown command '{other}'. Try praeco --help."))),
     });
     match result {
         Ok(()) => 0,
         Err(e) => {
             // `install` already reported through its event stream; everything else reports here.
-            let streamed = first == "install" && e.code != ErrorCode::Usage;
+            let streamed = (first == "install" || first == "update-all") && e.code != ErrorCode::Usage;
             if !streamed {
                 if wants_json || first == "detect" || (first == "install") {
                     out_line(&serde_json::json!({"ok": false, "error": {"code": e.code.as_str(), "message": e.message}}).to_string());

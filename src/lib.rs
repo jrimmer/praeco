@@ -11,15 +11,18 @@ pub mod cli;
 pub mod detect;
 pub mod error;
 pub mod files;
+pub mod hook;
 pub mod http;
 pub mod install;
 pub mod notes;
 pub mod progress;
+pub mod registry;
 pub mod release;
 pub mod restart;
 pub mod source;
 pub mod terminal;
 pub mod update;
+pub mod updateall;
 pub mod verify;
 pub mod version;
 

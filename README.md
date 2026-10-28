@@ -28,6 +28,7 @@ selection follows the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64
 - [Install kinds and the exact commands](#install-kinds-and-the-exact-commands)
 - [Dialog mode, terminal mode and the fallback](#dialog-mode-terminal-mode-and-the-fallback)
 - [Restart](#restart)
+- [Updating with the system: `init` and `update-all`](#updating-with-the-system-init-and-update-all)
   - [Launching praeco from an app](#launching-praeco-from-an-app)
 - [Shipping praeco with your app](#shipping-praeco-with-your-app)
 - [Using praeco from an app](#using-praeco-from-an-app)
@@ -93,6 +94,8 @@ praeco check   SOURCE --current VERSION [--marker TEXT] [--prereleases] [--exe P
 praeco install SOURCE --version VERSION --exe PATH [--mode dialog|terminal]
                [--restart-pid PID] [--restart -- COMMAND [ARGS...]]
 praeco detect  --exe PATH
+praeco init    --name NAME SOURCE (--exe PATH | --appimage PATH) [--version-arg ARG]... [--hook auto|none] [--json]
+praeco update-all [--mode auto|inline|dialog|terminal] [--json]
 praeco --help | --version
 ```
 
@@ -489,6 +492,76 @@ command with `std::process::Command::new(&praeco).args(...).spawn()`, `praeco` b
 the full path of the binary you ship, and tail the
 progress file the same way. The library path needs no file.
 
+## Updating with the system: `init` and `update-all`
+
+An app can have praeco keep it current even when the app is not running, by
+registering once. The app calls `praeco init`, for example on first run or from its
+package's post-install step; praeco does the rest.
+
+```sh
+praeco init --name myapp --github you/myapp --exe /usr/bin/myapp
+praeco init --name myapp --github you/myapp --appimage "$APPIMAGE"   # an AppImage
+```
+
+`init` writes `~/.config/praeco/apps.d/myapp.json` (or under `$XDG_CONFIG_HOME`),
+runs the app's version command once and reports the version it read (a warning, not
+an error, if it cannot), and adds praeco to the system's own update command where
+there is one. Run it again to change anything; it replaces the registration.
+`--version-arg ARG` (repeatable) changes how the version is asked for (default
+`--version`); `--prereleases` and `--asset-pattern` work as elsewhere; `--hook none`
+skips the system hook; `--json` prints one object.
+
+```sh
+praeco update-all                  # every registered app, silently
+praeco update-all --mode inline    # sudo in this terminal
+praeco update-all --json           # {"ok":..,"apps":[{"name","status","from","to","error"}],"problems":[..]}
+```
+
+`update-all` never asks whether to update, like the system updaters it runs beside.
+For each app it reads the installed version, checks the source, and installs a newer
+release the same way `praeco install` does. One app failing does not stop the
+others; the exit code is 1 if any failed. An app whose executable is gone is
+reported `not_installed` and is not a failure. `status` is `up_to_date`, `updated`,
+`not_installed` or `failed`. It does not restart apps: a new version starts the next
+time the app is launched.
+
+Administrator rights (packages only; AppImage and tarball installs need none):
+
+| `--mode` | What happens |
+| --- | --- |
+| `auto` (default) | `sudo` in the current terminal if stdin is one; otherwise the desktop permission prompt; if that cannot appear, a terminal window |
+| `inline` | `sudo` in the current terminal |
+| `dialog` | the permission prompt (`pkexec`) only |
+| `terminal` | a terminal window only |
+
+Only "no prompt is possible" moves on to the next way. A dismissed prompt is an
+answer and stops that app.
+
+**Omarchy.** `praeco init` adds `~/.config/omarchy/hooks/post-update.d/50-praeco`
+(recognised by `ID=omarchy` in `/etc/os-release`), so `omarchy update` also runs
+`praeco update-all` with the password it already took. The hook is one shared file
+that calls praeco by full path; `init` rewrites it if praeco moved, never replaces a
+file of the same name that praeco did not write, and refuses to point it at a praeco
+inside an AppImage mount or `/tmp`. A failing hook never stops the system update.
+Deleting the file undoes it. Other systems get no hook yet; `update-all` still works
+when run by hand or from your own timer.
+
+**Where registrations live and who is trusted.** `~/.config/praeco/apps.d/` for the
+user, and `/usr/share/praeco/apps.d/` for packages (the user's file of the same name
+wins). Each file is `{"name", "source", "exe", "version_cmd", ...}`; a file must be
+owned by the folder's owner (root for the system folder) and not writable by anyone
+else, or it is ignored and listed under `problems`.
+
+**Security note.** The version command runs the registered program. During
+`omarchy update` the caller's sudo is unlocked for its terminal, and praeco must not
+hand that to an app, so the version command runs in a session of its own with no
+terminal and stdin closed (a time limit of 15 seconds applies). That keeps it from
+using the terminal's sudo timestamp unless sudo is set to share timestamps across
+terminals (`timestamp_type=global`) or to need no password. Anything that can write
+to your registry or to a hook directory can already run code when you run the system
+update, so the registry adds no new kind of access, but treat `apps.d` like a hook
+directory.
+
 ## Shipping praeco with your app
 
 Each app ships its own praeco, pinned to a release tag, and calls it by full path.
@@ -702,6 +775,9 @@ Privilege handling:
   environment.
 - Private repositories are not supported: asset downloads carry no credentials.
 - Only the first page of releases is read.
+- `update-all` reads versions by running each app's version command; it does not
+  restart apps, and registrations are never removed automatically.
+- The system hook exists for Omarchy only.
 - No delta updates, no rollback, no signature checks.
 
 ## Building and testing

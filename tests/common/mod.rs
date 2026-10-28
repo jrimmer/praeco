@@ -216,6 +216,7 @@ pub fn env_with(path_dir: &Path, home: &Path) -> Env {
         appimage: None,
         appdir: None,
         home: Some(home.to_path_buf()),
+        config_home: None,
         euid: 1000,
         graphical: true,
         proc_root: path_dir.join("no-proc"),
