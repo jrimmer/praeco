@@ -21,6 +21,19 @@ fn praeco() -> Command {
     c
 }
 
+/// Run a binary this test just copied. If another test thread forks while the copy's
+/// write handle is still open, the child briefly holds it and the first exec fails
+/// with "Text file busy"; the next try works once that fork has exec'd.
+fn output_retrying(c: &mut Command) -> Output {
+    for _ in 0..100 {
+        match c.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => std::thread::sleep(Duration::from_millis(20)),
+            other => return other.unwrap(),
+        }
+    }
+    c.output().unwrap()
+}
+
 fn json_lines(out: &Output) -> Vec<Value> {
     String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("bad JSON line {l:?}: {e}"))).collect()
 }
@@ -429,7 +442,7 @@ fn praeco_inside_an_appimage_mount_runs_from_a_private_copy_when_it_will_outlive
     }
     let mut c = Command::new(&inside);
     c.args(&args).env_remove("APPIMAGE").env_remove("PRAECO_SELF_COPY_DIR");
-    let out = c.output().unwrap();
+    let out = output_retrying(&mut c);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
     assert_eq!(json_lines(&out).last().unwrap()["event"], "done");
     assert!(wait_for(&marker));
@@ -458,7 +471,7 @@ fn terminal_mode_works_when_praeco_lives_in_a_path_with_spaces() {
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let mut args = detach_args(&i, &[]);
     args.extend(["--mode".to_string(), "terminal".to_string()]);
-    let out = Command::new(&copy).args(&args).env("PATH", &path).env_remove("APPIMAGE").stdin(Stdio::null()).output().unwrap();
+    let out = output_retrying(Command::new(&copy).args(&args).env("PATH", &path).env_remove("APPIMAGE").stdin(Stdio::null()));
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
     let names: Vec<String> = json_lines(&out).iter().map(|e| e["event"].as_str().unwrap().to_string()).collect();
     assert_eq!(names.first().map(String::as_str), Some("terminal_opened"));
@@ -502,7 +515,7 @@ fn a_bogus_appdir_never_causes_a_relocation_loop() {
     for a in ["--version", "1.0.5", "--exe", "/tmp/.mount_x/usr/bin/myapp", "--appdir", "/tmp/.mount_x", "--appimage", i.img.to_str().unwrap(), "--restart", "--", "/bin/true"] {
         args.push(a.to_string());
     }
-    let out = Command::new(&inside).args(&args).env_remove("PRAECO_SELF_COPY_DIR").output().unwrap();
+    let out = output_retrying(Command::new(&inside).args(&args).env_remove("PRAECO_SELF_COPY_DIR"));
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
     let _ = std::fs::remove_dir_all(&mount);
     std::thread::sleep(Duration::from_millis(300));
@@ -526,14 +539,14 @@ fn relocation_cleans_search_paths_and_leaves_one_progress_dir() {
     let mut args = detach_args(&i, &["--detach", "--restart", "--", "sh", "-c", &script]);
     let ix = args.iter().position(|a| a == "/tmp/.mount_x/usr/bin/myapp").unwrap();
     args[ix] = "/tmp/.mount_x/usr/bin/myapp".into();
-    let out = Command::new(&inside)
-        .args(&args)
-        .env("TMPDIR", &private_tmp)
-        .env("LD_LIBRARY_PATH", format!("{}/usr/lib", mount.display()))
-        .env("QT_PLUGIN_PATH", format!("{}/p:/usr/lib/qt", mount.display()))
-        .env_remove("PRAECO_SELF_COPY_DIR")
-        .output()
-        .unwrap();
+    let out = output_retrying(
+        Command::new(&inside)
+            .args(&args)
+            .env("TMPDIR", &private_tmp)
+            .env("LD_LIBRARY_PATH", format!("{}/usr/lib", mount.display()))
+            .env("QT_PLUGIN_PATH", format!("{}/p:/usr/lib/qt", mount.display()))
+            .env_remove("PRAECO_SELF_COPY_DIR"),
+    );
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
     let path = PathBuf::from(json_lines(&out)[0]["progress_file"].as_str().unwrap());
     wait_for_event(&path, "done");
