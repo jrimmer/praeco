@@ -6,14 +6,6 @@ use praeco::updateall::{update_hosted, Options, Status, UpdateMode};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn native(name: &str) -> String {
-    match std::env::consts::ARCH {
-        "x86_64" => name.to_string(),
-        "aarch64" => name.replace("x86_64", "aarch64").replace("amd64", "arm64"),
-        arch => name.replace("x86_64", arch),
-    }
-}
-
 fn hosted(name: &str, prog: &Path, args: &[&str]) -> App {
     let mut cmd = vec![prog.to_string_lossy().into_owned()];
     cmd.extend(args.iter().map(|a| a.to_string()));
@@ -181,11 +173,14 @@ fn update_hosted_updates_the_app_with_the_version_it_reports() {
     let s = FakeServer::start();
     let img = r.tmp.path().join("Babbage.AppImage");
     write_exec(&img, "OLD");
-    s.publish_releases(vec![s.publish_one("v1.0.5", &native("myapp-x86_64.AppImage"), b"NEW")]);
+    // The machine's architecture is pinned on both sides, so the test means the same everywhere.
+    s.publish_releases(vec![s.publish_one("v1.0.5", "myapp-aarch64.AppImage", b"NEW")]);
     let mut app = hosted("babbage", &img, &["--update-now"]);
     app.appimage = true;
     app.source = SourceSpec::Forgejo { base: s.base.clone(), repo: "o/r".into() };
-    let opts = Options { mode: UpdateMode::Inline, stdin_is_tty: false, env: r.env.clone(), token: None, escalation: None };
+    let mut env = r.env.clone();
+    env.arch = "aarch64".into();
+    let opts = Options { mode: UpdateMode::Inline, stdin_is_tty: false, env, token: None, escalation: None };
 
     let mut log = Vec::new();
     let res = update_hosted(&app, "1.0.4", &opts, &mut |l| log.push(l));
