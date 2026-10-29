@@ -647,7 +647,7 @@ missing (a source build, say) hide the update UI rather than search for one.
 it against its `.sha256` file, which needs no Rust toolchain:
 
 ```sh
-v=0.1.1; arch=$(uname -m)        # x86_64 or aarch64
+v=0.3.0; arch=$(uname -m)        # x86_64 or aarch64
 base=https://github.com/jrimmer/praeco/releases/download/v$v
 curl -fLO "$base/praeco-linux-$arch" -O "$base/praeco-linux-$arch.sha256"
 sha256sum -c "praeco-linux-$arch.sha256"
@@ -657,7 +657,7 @@ install -Dm755 "praeco-linux-$arch" "$pkgdir/usr/lib/myapp/praeco"
 or build a tagged release from source:
 
 ```sh
-git clone --depth 1 --branch v0.1.1 https://github.com/jrimmer/praeco.git
+git clone --depth 1 --branch v0.3.0 https://github.com/jrimmer/praeco.git
 (cd praeco && cargo build --locked --release)
 install -Dm755 praeco/target/release/praeco "$pkgdir/usr/lib/myapp/praeco"
 ```
@@ -671,7 +671,7 @@ the version the same way:
 
 ```toml
 [dependencies]
-praeco = "0.1"
+praeco = "0.3"
 ```
 
 A Rust app that wants the terminal fallback still ships the `praeco` binary at the
