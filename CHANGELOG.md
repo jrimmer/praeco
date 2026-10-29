@@ -1,9 +1,11 @@
 # Changelog
 
-## 0.3.0 (2026-10-28)
+## 0.3.1 (2026-10-28)
 
-The 0.2.0 GitHub release was never published to crates.io; this is the next crates.io
-release after 0.1.1 and includes everything in 0.2.0.
+The 0.3.0 tag was never released: its release build failed one test on aarch64 (a bug
+in the test, not in praeco), so nothing was published for it. 0.3.1 is the same code
+with that test fixed. The 0.2.0 GitHub release was never published to crates.io; this
+is the next crates.io release after 0.1.1 and includes everything in 0.2.0.
 
 - Apps that link praeco as a library, with no `praeco` program of their own, can now
   update with the system: they register with an update command (`praeco init
