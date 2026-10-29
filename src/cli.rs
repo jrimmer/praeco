@@ -8,6 +8,7 @@ use crate::error::{Error, ErrorCode, Result};
 use crate::hook;
 use crate::http::Http;
 use crate::install::{self, InstallInfo, InstallOptions, Mode};
+use crate::integrate;
 use crate::notes::DEFAULT_MARKER;
 use crate::progress::Event;
 use crate::registry;
@@ -32,6 +33,8 @@ USAGE
                  [--restart-pid PID] [--restart -- COMMAND [ARGS...]]
   praeco detect  --exe PATH
   praeco init    --name NAME SOURCE (--exe PATH | --appimage PATH) [--version-arg ARG]... [--hook auto|none] [--json]
+  praeco init    --name NAME SOURCE [--exe PATH | --appimage PATH] [--needs-terminal] [--hook auto|none] [--json]
+                 --update-cmd -- PROGRAM [ARGS...]
   praeco init    --remove --name NAME [--hook auto|none] [--json]
   praeco update-all [--mode auto|inline|dialog|terminal] [--json]
   praeco --help | --version
@@ -77,6 +80,11 @@ init OPTIONS
                            (default: $APPIMAGE when set)
   --version-arg ARG        argument that makes the app print its version (repeatable;
                            default: --version)
+  --update-cmd -- CMD...   for an app that links praeco as a library: the command that makes it
+                           update itself (headless); the system update runs it directly, so no
+                           praeco program is needed. Must be last. No version command is used.
+  --needs-terminal         with --update-cmd: the command may need administrator rights, so it
+                           keeps the terminal; otherwise it runs without one
   --hook auto|none         auto (default): also add praeco to the system's update command
                            where there is one (Omarchy: `omarchy update`)
 
@@ -127,6 +135,8 @@ struct Args {
     version_args: Vec<String>,
     hook: Option<String>,
     remove: bool,
+    update_cmd: Vec<OsString>,
+    needs_terminal: bool,
 }
 
 fn usage(msg: impl Into<String>) -> Error {
@@ -191,6 +201,11 @@ fn parse(args: Vec<OsString>) -> Result<Args> {
             "--version-arg" => a.version_args.push(text(value(&mut it)?)),
             "--hook" => a.hook = Some(text(value(&mut it)?)),
             "--remove" => a.remove = true,
+            "--needs-terminal" => a.needs_terminal = true,
+            "--update-cmd" => match it.next() {
+                Some(sep) if sep == "--" => a.update_cmd = it.by_ref().collect(),
+                _ => return Err(usage("--update-cmd must be followed by -- and the command that makes the app update itself")),
+            },
             _ => return Err(usage(format!("Unknown option {flag}. Try praeco --help."))),
         }
     }
@@ -408,17 +423,24 @@ fn cmd_init(a: &Args) -> Result<()> {
     let name = a.need(&a.name, "--name")?;
     let source = a.source()?;
     let hook_mode = match a.hook.as_deref() {
-        None | Some("auto") => true,
-        Some("none") => false,
+        None | Some("auto") => integrate::HookMode::Auto,
+        Some("none") => integrate::HookMode::None,
         Some(other) => return Err(usage(format!("'{other}' is not a hook mode; use auto or none"))),
     };
     let env = a.env();
+    let update_cmd: Option<Vec<String>> = if a.update_cmd.is_empty() {
+        None
+    } else {
+        let words = a.update_cmd.iter().map(|w| w.to_str().map(str::to_string)).collect::<Option<Vec<_>>>();
+        Some(words.ok_or_else(|| usage("The update command must be valid UTF-8"))?)
+    };
     let inside_appimage = |exe: &std::path::Path| env.appdir.as_ref().is_some_and(|d| exe.starts_with(d));
-    let (exe, appimage) = match (&env.appimage, &a.exe) {
-        (Some(img), None) => (img.clone(), true),
-        (Some(img), Some(exe)) if inside_appimage(exe) => (img.clone(), true),
-        (_, Some(exe)) => (exe.clone(), false),
-        (None, None) => return Err(usage("praeco init needs --exe PATH (or --appimage PATH)")),
+    let (exe, appimage) = match (&env.appimage, &a.exe, &update_cmd) {
+        (Some(img), None, _) => (img.clone(), true),
+        (Some(img), Some(exe), _) if inside_appimage(exe) => (img.clone(), true),
+        (_, Some(exe), _) => (exe.clone(), false),
+        (None, None, Some(cmd)) => (PathBuf::from(&cmd[0]), false),
+        (None, None, None) => return Err(usage("praeco init needs --exe PATH (or --appimage PATH)")),
     };
     let exe = std::path::absolute(exe)?;
     let spec = if let Some(g) = &a.github {
@@ -428,38 +450,54 @@ fn cmd_init(a: &Args) -> Result<()> {
         registry::SourceSpec::Forgejo { base, repo }
     };
     drop(source);
-    let mut version_cmd = vec![exe.to_string_lossy().into_owned()];
-    if a.version_args.is_empty() {
-        version_cmd.push("--version".into());
-    } else {
-        version_cmd.extend(a.version_args.iter().cloned());
+    // An app that updates itself knows its own version; any other is asked.
+    let mut version_cmd = Vec::new();
+    if update_cmd.is_none() {
+        version_cmd.push(exe.to_string_lossy().into_owned());
+        if a.version_args.is_empty() {
+            version_cmd.push("--version".into());
+        } else {
+            version_cmd.extend(a.version_args.iter().cloned());
+        }
     }
-    let app = registry::App { name, source: spec, exe, appimage, version_cmd, prereleases: a.prereleases, asset_patterns: a.patterns.clone() };
-    let registry_file = registry::save(&env, &app)?;
-    let (version, version_error) = match registry::installed_version(&app) {
-        Ok(v) => (Some(v), None),
-        Err(e) => (None, Some(e.message)),
+    let app = registry::App {
+        name,
+        source: spec,
+        exe,
+        appimage,
+        version_cmd,
+        update_cmd,
+        needs_terminal: a.needs_terminal,
+        prereleases: a.prereleases,
+        asset_patterns: a.patterns.clone(),
     };
-    let hook = if hook_mode {
-        hook::ensure_omarchy_hook(&env, &std::env::current_exe()?, &hook::os_release_path())?
+    app.validate()?;
+    let registered = integrate::register(&env, &app, hook_mode, Some(&std::env::current_exe()?))?;
+    let (version, version_error) = if app.hosted() {
+        (None, None)
     } else {
-        hook::HookOutcome::NotApplicable
+        match registry::installed_version(&app) {
+            Ok(v) => (Some(v), None),
+            Err(e) => (None, Some(e.message)),
+        }
     };
+    let hook = registered.hook;
     if a.json {
-        let out = InitOut { ok: true, app: &app, registry_file: registry_file.display().to_string(), version, version_error, hook };
+        let out = InitOut { ok: true, app: &app, registry_file: registered.registry_file.display().to_string(), version, version_error, hook };
         out_line(&serde_json::to_string(&out).expect("serialises"));
         return Ok(());
     }
-    println!("Registered {} ({}).", app.name, registry_file.display());
+    println!("Registered {} ({}).", app.name, registered.registry_file.display());
     match (&version, &version_error) {
         (Some(v), _) => println!("Installed version: {v}."),
         (_, Some(e)) => println!("Warning: {e}"),
         _ => {}
     }
+    let what = if app.hosted() { format!("{}'s update command", app.name) } else { "praeco".to_string() };
     match hook {
-        hook::HookOutcome::Installed { path } => println!("Added praeco to the system update command ({}).", path.display()),
-        hook::HookOutcome::Current { path } => println!("praeco is already part of the system update command ({}).", path.display()),
-        hook::HookOutcome::Skipped { reason } => println!("Did not add praeco to the system update command: {reason}"),
+        hook::HookOutcome::Installed { path } => println!("Added {what} to the system update command ({}).", path.display()),
+        hook::HookOutcome::Current { path } => println!("{what} is already part of the system update command ({}).", path.display()),
+        hook::HookOutcome::Skipped { reason } => println!("Did not add {what} to the system update command: {reason}"),
         hook::HookOutcome::NotApplicable => {}
     }
     Ok(())
@@ -480,20 +518,12 @@ struct RemoveOut {
 fn cmd_init_remove(a: &Args) -> Result<()> {
     let name = a.need(&a.name, "--name")?;
     let hook_mode = match a.hook.as_deref() {
-        None | Some("auto") => true,
-        Some("none") => false,
+        None | Some("auto") => integrate::HookMode::Auto,
+        Some("none") => integrate::HookMode::None,
         Some(other) => return Err(usage(format!("'{other}' is not a hook mode; use auto or none"))),
     };
     let env = a.env();
-    let removal = registry::remove(&env, &name)?;
-    let left = registry::load(&env).apps.len();
-    let hook = if !hook_mode {
-        hook::RemoveOutcome::Kept { reason: "--hook none".into() }
-    } else if left > 0 {
-        hook::RemoveOutcome::Kept { reason: format!("{left} other app{} still registered", if left == 1 { " is" } else { "s are" }) }
-    } else {
-        hook::remove_omarchy_hook(&env)?
-    };
+    let integrate::Unregistered { removal, hook } = integrate::unregister(&env, &name, hook_mode)?;
     let (removed, registry_file) = match &removal {
         registry::Removal::Removed(p) => (true, Some(p.display().to_string())),
         registry::Removal::NotRegistered | registry::Removal::SystemOnly(_) => (false, None),

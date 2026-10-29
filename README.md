@@ -95,6 +95,8 @@ praeco install SOURCE --version VERSION --exe PATH [--mode dialog|terminal]
                [--restart-pid PID] [--restart -- COMMAND [ARGS...]]
 praeco detect  --exe PATH
 praeco init    --name NAME SOURCE (--exe PATH | --appimage PATH) [--version-arg ARG]... [--hook auto|none] [--json]
+praeco init    --name NAME SOURCE [--exe PATH | --appimage PATH] [--needs-terminal] [--hook auto|none] [--json]
+               --update-cmd -- PROGRAM [ARGS...]
 praeco init    --remove --name NAME [--hook auto|none] [--json]
 praeco update-all [--mode auto|inline|dialog|terminal] [--json]
 praeco --help | --version
@@ -530,7 +532,7 @@ For each app it reads the installed version, checks the source, and installs a n
 release the same way `praeco install` does. One app failing does not stop the
 others; the exit code is 1 if any failed. An app whose executable is gone is
 reported `not_installed` and is not a failure. `status` is `up_to_date`, `updated`,
-`not_installed` or `failed`. It does not restart apps: a new version starts the next
+`hosted`, `not_installed` or `failed`. It does not restart apps: a new version starts the next
 time the app is launched.
 
 Administrator rights (packages only; AppImage and tarball installs need none):
@@ -556,9 +558,53 @@ not write, and refuses to point it at a praeco inside an AppImage mount or `/tmp
 Deleting the file undoes it. Other systems get no hook yet; `update-all` still works
 when run by hand or from your own timer.
 
+**Apps that link praeco as a library.** An app with no `praeco` program of its own
+(a Rust app using the crate, shipped as an AppImage) registers with an *update
+command*: the command that makes the app update itself, headless. The system update
+runs that command directly, so nothing else has to be installed, and the app's own
+rules (its settings, its skipped versions, "off") decide whether to update.
+
+```sh
+praeco init --name myapp --github you/myapp --update-cmd -- "$APPIMAGE" update-now
+praeco init --remove --name myapp
+```
+
+```rust
+use praeco::integrate::{self, HookMode};
+use praeco::registry::{App, SourceSpec};
+use praeco::updateall::{update_hosted, Options, UpdateMode};
+
+// Once, when the user chooses "update with the system":
+let app = App {
+    name: "myapp".into(),
+    source: SourceSpec::from(&source),          // the praeco::Source you already check
+    exe: program.clone(),                       // the AppImage file, not a path inside its mount
+    appimage: true,
+    version_cmd: vec![],                        // not needed: the app knows its version
+    update_cmd: Some(vec![program.display().to_string(), "update-now".into()]),
+    needs_terminal: false,                      // true if an update may need sudo
+    prereleases: false,
+    asset_patterns: vec![],
+};
+integrate::register(&praeco::detect::Env::from_process(), &app, HookMode::Auto, None)?;
+
+// In `myapp update-now`, after your own checks:
+let opts = Options::from_process(UpdateMode::Auto);
+let result = update_hosted(&app, env!("CARGO_PKG_VERSION"), &opts, &mut |line| println!("{line}"));
+```
+
+On Omarchy this writes `50-praeco-myapp` beside (not instead of) the shared hook.
+The command runs in a session of its own, with no terminal and stdin closed, unless
+`needs_terminal` is set, so an app that needs no administrator rights cannot reach the
+update's unlocked `sudo`. A command that is gone (the app was uninstalled) is skipped
+quietly, and a program under `/tmp` or inside an AppImage mount is refused. `update-all`
+lists such an app as `hosted` and does not run it; its own hook does.
+`integrate::unregister` (or `praeco init --remove`) takes the registration and the
+app's hook out; the shared hook stays while any app still relies on it.
+
 **Where registrations live and who is trusted.** `~/.config/praeco/apps.d/` for the
 user, and `/usr/share/praeco/apps.d/` for packages (the user's file of the same name
-wins). Each file is `{"name", "source", "exe", "version_cmd", ...}`; a file must be
+wins). Each file is `{"name", "source", "exe", "version_cmd" or "update_cmd", ...}`; a file must be
 owned by the folder's owner (root for the system folder) and not writable by anyone
 else, or it is ignored and listed under `problems`.
 

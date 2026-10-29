@@ -77,6 +77,8 @@ pub struct Options {
 pub enum Status {
     UpToDate,
     Updated,
+    /// The app updates itself when the system updates (it has an update command).
+    Hosted,
     /// The registered executable no longer exists (the app was uninstalled).
     NotInstalled,
     Failed,
@@ -100,19 +102,24 @@ pub struct AppResult {
     pub error: Option<ErrorInfo>,
 }
 
+impl Options {
+    /// Options for the running process: stdin and the environment as they are.
+    pub fn from_process(mode: UpdateMode) -> Options {
+        Options { mode, stdin_is_tty: std::io::IsTerminal::is_terminal(&std::io::stdin()), env: Env::from_process(), token: None, escalation: None }
+    }
+}
+
 /// Update every app in `registry`. `log` receives plain progress lines.
 pub fn run(registry: &Registry, opts: &Options, log: &mut dyn FnMut(String)) -> Vec<AppResult> {
     registry.apps.iter().map(|app| update_one(app, opts, log)).collect()
 }
 
-fn update_one(app: &App, opts: &Options, log: &mut dyn FnMut(String)) -> AppResult {
-    let mut r = AppResult { name: app.name.clone(), status: Status::Failed, from: None, to: None, error: None };
-    if !app.exe.exists() {
-        r.status = Status::NotInstalled;
-        log(format!("{}: not installed any more, skipped", app.name));
-        return r;
-    }
-    if let Err(e) = try_update(app, opts, log, &mut r) {
+fn new_result(app: &App) -> AppResult {
+    AppResult { name: app.name.clone(), status: Status::Failed, from: None, to: None, error: None }
+}
+
+fn finish(app: &App, mut r: AppResult, outcome: Result<()>, log: &mut dyn FnMut(String)) -> AppResult {
+    if let Err(e) = outcome {
         log(format!("{}: could not update: {}", app.name, e.message));
         r.status = Status::Failed;
         r.error = Some(ErrorInfo { code: e.code.as_str().to_string(), message: e.message });
@@ -120,8 +127,33 @@ fn update_one(app: &App, opts: &Options, log: &mut dyn FnMut(String)) -> AppResu
     r
 }
 
-fn try_update(app: &App, opts: &Options, log: &mut dyn FnMut(String), r: &mut AppResult) -> Result<()> {
-    let current = registry::installed_version(app)?;
+fn update_one(app: &App, opts: &Options, log: &mut dyn FnMut(String)) -> AppResult {
+    let mut r = new_result(app);
+    if app.hosted() {
+        r.status = Status::Hosted;
+        log(format!("{}: updates itself with the system, skipped", app.name));
+        return r;
+    }
+    if !app.exe.exists() {
+        r.status = Status::NotInstalled;
+        log(format!("{}: not installed any more, skipped", app.name));
+        return r;
+    }
+    let outcome = registry::installed_version(app).and_then(|current| try_update(app, &current, opts, log, &mut r));
+    finish(app, r, outcome, log)
+}
+
+/// Update one app that links praeco as a library and updates itself: the app's own
+/// headless update command calls this with the version it is running. The app
+/// decides whether to call it at all (its own settings, intervals and skips).
+pub fn update_hosted(app: &App, current: &str, opts: &Options, log: &mut dyn FnMut(String)) -> AppResult {
+    let mut r = new_result(app);
+    let outcome = try_update(app, current, opts, log, &mut r);
+    finish(app, r, outcome, log)
+}
+
+fn try_update(app: &App, current: &str, opts: &Options, log: &mut dyn FnMut(String), r: &mut AppResult) -> Result<()> {
+    let current = current.to_string();
     r.from = Some(current.clone());
     let source = app.source.to_source()?;
     let mut copts = CheckOptions::new(source.clone(), current.clone());

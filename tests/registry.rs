@@ -13,6 +13,8 @@ fn app(name: &str, exe: &Path) -> App {
         exe: exe.to_path_buf(),
         appimage: false,
         version_cmd: vec![exe.to_string_lossy().into_owned(), "--version".into()],
+        update_cmd: None,
+        needs_terminal: false,
         prereleases: false,
         asset_patterns: vec![],
     }

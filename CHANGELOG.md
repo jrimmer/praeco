@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Apps that link praeco as a library, with no `praeco` program of their own, can now
+  update with the system: they register with an update command (`praeco init
+  --update-cmd -- PROGRAM ARGS`, or `integrate::register`), and the system update runs
+  that command through a hook of its own (`50-praeco-NAME` on Omarchy). The app's
+  settings decide whether it updates; the command runs without a terminal unless
+  `--needs-terminal` says it may need `sudo`. `updateall::update_hosted` is the call
+  for the app's headless update.
+- New library API: `integrate::{register, unregister}`, `hook::{ensure_app_hook,
+  remove_app_hook}`, `updateall::Options::from_process`, `SourceSpec::from(&Source)`.
+  `update-all` reports such apps as `hosted` and leaves them to their own hook.
+- Registrations may omit `version_cmd` when they have an `update_cmd`; `registry::App`
+  gains `update_cmd` and `needs_terminal`, so code that builds one by hand must set them.
+
 ## 0.2.0 (2026-10-28)
 
 - New `praeco init`: an app registers itself once (name, source, executable) and

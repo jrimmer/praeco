@@ -348,3 +348,105 @@ fn remove_respects_hook_none_foreign_hooks_and_system_registrations() {
         assert_eq!(out.status.code(), Some(2), "{bad:?}");
     }
 }
+
+/// A program outside /tmp: hooks refuse programs that may not exist at the next update.
+fn lasting_dir() -> tempfile::TempDir {
+    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
+}
+
+fn init_hosted(h: &Home, name: &str, s: &FakeServer, prog: &Path, extra: &[&str]) -> Value {
+    let out = h
+        .praeco("omarchy")
+        .args(["init", "--name", name, "--forgejo", &s.base, "o/r", "--json"])
+        .args(extra)
+        .args(["--update-cmd", "--", prog.to_str().unwrap(), "--update-now"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    json(&out)
+}
+
+#[test]
+fn an_app_that_updates_itself_registers_with_a_hook_of_its_own() {
+    let h = Home::new();
+    let s = FakeServer::start();
+    let work = lasting_dir();
+    let marker = work.path().join("ran");
+    let prog = work.path().join("babbage");
+    write_exec(&prog, &format!("#!/bin/sh\necho ran > '{}'\n", marker.display()));
+
+    let v = init_hosted(&h, "babbage", &s, &prog, &[]);
+    assert_eq!(v["app"]["update_cmd"], serde_json::json!([prog.to_str().unwrap(), "--update-now"]));
+    assert!(v["app"].get("version_cmd").is_none() && v.get("version").is_none(), "an app that updates itself is never asked its version: {v}");
+    assert_eq!(v["app"]["exe"], prog.to_str().unwrap(), "--exe defaults to the update command's program");
+    let hooks = h.dir().join(".config/omarchy/hooks/post-update.d");
+    assert_eq!(v["hook"]["status"], "installed");
+    assert_eq!(v["hook"]["path"], hooks.join("50-praeco-babbage").to_str().unwrap());
+    assert!(!hooks.join("50-praeco").exists(), "no shared hook, so no praeco program is needed");
+    let text = std::fs::read_to_string(hooks.join("50-praeco-babbage")).unwrap();
+    assert!(text.contains(prog.to_str().unwrap()) && text.contains("--update-now") && text.contains("setsid"), "{text}");
+    assert!(!marker.exists(), "registering does not run the app");
+
+    let v = init_hosted(&h, "needsroot", &s, &prog, &["--needs-terminal"]);
+    assert_eq!(v["app"]["needs_terminal"], true);
+    assert!(!std::fs::read_to_string(hooks.join("50-praeco-needsroot")).unwrap().contains("setsid"));
+}
+
+#[test]
+fn update_all_leaves_self_updating_apps_to_their_own_hook() {
+    let h = Home::new();
+    let s = FakeServer::start();
+    let work = lasting_dir();
+    let marker = work.path().join("ran");
+    let prog = work.path().join("babbage");
+    write_exec(&prog, &format!("#!/bin/sh\necho ran > '{}'\n", marker.display()));
+    init_hosted(&h, "babbage", &s, &prog, &[]);
+    let out = h.praeco("omarchy").args(["update-all", "--json"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v = json(&out);
+    assert_eq!(v["apps"][0]["status"], "hosted");
+    assert_eq!(v["ok"], true);
+    assert!(!marker.exists(), "update-all does not run it; its own hook does");
+    let out = h.praeco("omarchy").arg("update-all").output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("babbage: updates itself with the system"));
+}
+
+#[test]
+fn removing_apps_takes_out_each_hook_when_nothing_needs_it() {
+    let h = Home::new();
+    let s = FakeServer::start();
+    let work = lasting_dir();
+    let prog = work.path().join("babbage");
+    write_exec(&prog, "#!/bin/sh\n");
+    let plain = h.script_app("plain", "1.0.0");
+    init(&h, "omarchy", "plain", &s, "--exe", &plain);
+    init_hosted(&h, "babbage", &s, &prog, &[]);
+    let hooks = h.dir().join(".config/omarchy/hooks/post-update.d");
+    assert!(hooks.join("50-praeco").is_file() && hooks.join("50-praeco-babbage").is_file());
+
+    let v = remove(&h, "babbage", &[]);
+    assert_eq!(v["hook"]["status"], "removed", "{v}");
+    assert!(!hooks.join("50-praeco-babbage").exists());
+    assert!(hooks.join("50-praeco").is_file(), "the shared hook is still needed by 'plain'");
+
+    init_hosted(&h, "babbage", &s, &prog, &[]);
+    let v = remove(&h, "plain", &[]);
+    assert_eq!(v["hook"]["status"], "removed", "a self-updating app does not keep the shared hook alive: {v}");
+    assert!(!hooks.join("50-praeco").exists());
+    assert!(hooks.join("50-praeco-babbage").is_file(), "its own hook stays");
+}
+
+#[test]
+fn init_update_cmd_usage_errors() {
+    let h = Home::new();
+    let s = FakeServer::start();
+    for args in [
+        vec!["init", "--name", "x", "--forgejo", &s.base, "o/r", "--update-cmd"],
+        vec!["init", "--name", "x", "--forgejo", &s.base, "o/r", "--update-cmd", "--"],
+        vec!["init", "--name", "x", "--forgejo", &s.base, "o/r", "--update-cmd", "--", "relative-program"],
+    ] {
+        let out = h.praeco("omarchy").args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+    }
+    assert!(!h.dir().join(".config/praeco").exists(), "nothing registered");
+}

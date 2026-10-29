@@ -14,6 +14,7 @@ pub mod files;
 pub mod hook;
 pub mod http;
 pub mod install;
+pub mod integrate;
 pub mod notes;
 pub mod progress;
 pub mod registry;

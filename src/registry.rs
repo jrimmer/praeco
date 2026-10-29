@@ -7,7 +7,7 @@
 use crate::assets::AssetPatterns;
 use crate::detect::{Env, InstallKind};
 use crate::error::{Error, ErrorCode, Result};
-use crate::source::Source;
+use crate::source::{Host, Source, GITHUB_API};
 use crate::version;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -47,6 +47,16 @@ impl SourceSpec {
     }
 }
 
+impl From<&Source> for SourceSpec {
+    fn from(source: &Source) -> SourceSpec {
+        let repo = format!("{}/{}", source.owner, source.repo);
+        match &source.host {
+            Host::GitHub { api_base } => SourceSpec::Github { repo, api_base: (api_base != GITHUB_API).then(|| api_base.clone()) },
+            Host::Forgejo { base } => SourceSpec::Forgejo { base: base.clone(), repo },
+        }
+    }
+}
+
 /// One registered app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct App {
@@ -58,13 +68,31 @@ pub struct App {
     pub exe: PathBuf,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub appimage: bool,
-    /// Prints the installed version. Absolute program path first.
+    /// Prints the installed version. Absolute program path first. Empty for an
+    /// app that updates itself (see `update_cmd`), which knows its own version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub version_cmd: Vec<String>,
+    /// For an app that links praeco as a library: the command that makes the app
+    /// update itself, headless (absolute program first). The system update runs
+    /// it directly, so no praeco program has to be installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_cmd: Option<Vec<String>>,
+    /// The update command may need administrator rights (a package install), so
+    /// it keeps the terminal and its unlocked `sudo`. Otherwise it gets neither.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_terminal: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prereleases: bool,
     /// `KIND=GLOB`, as for `--asset-pattern`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asset_patterns: Vec<String>,
+}
+
+impl App {
+    /// An app that updates itself when the system updates (it has an `update_cmd`).
+    pub fn hosted(&self) -> bool {
+        self.update_cmd.is_some()
+    }
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -83,10 +111,20 @@ impl App {
         if !self.exe.is_absolute() {
             return bad(format!("The executable path must be absolute, not {}", self.exe.display()));
         }
-        match self.version_cmd.first() {
-            None => return bad("The version command is empty".into()),
-            Some(p) if !Path::new(p).is_absolute() => return bad(format!("The version command must start with an absolute path, not {p}")),
-            Some(_) => {}
+        match (self.version_cmd.first(), &self.update_cmd) {
+            (None, None) => return bad("The version command is empty".into()),
+            (Some(p), _) if !Path::new(p).is_absolute() => return bad(format!("The version command must start with an absolute path, not {p}")),
+            _ => {}
+        }
+        if let Some(cmd) = &self.update_cmd {
+            match cmd.first() {
+                None => return bad("The update command is empty".into()),
+                Some(p) if !Path::new(p).is_absolute() => return bad(format!("The update command must start with an absolute path, not {p}")),
+                Some(_) => {}
+            }
+            if cmd.iter().any(|a| a.contains(['\n', '\0'])) {
+                return bad("The update command cannot contain a newline".into());
+            }
         }
         self.source.to_source()?;
         let mut patterns = AssetPatterns::default();
@@ -241,8 +279,10 @@ pub fn installed_version(app: &App) -> Result<String> {
 /// Run the version command (stdin closed, no controlling terminal, output
 /// capped, killed after `timeout`) and read the version from what it prints.
 pub fn installed_version_within(app: &App, timeout: Duration) -> Result<String> {
-    let prog = &app.version_cmd[0];
     let fail = |m: String| Error::new(ErrorCode::Io, format!("Could not read the installed version of {}: {m}", app.name));
+    let Some(prog) = app.version_cmd.first() else {
+        return Err(fail("this app has no version command (it updates itself)".into()));
+    };
     let mut cmd = Command::new(prog);
     cmd.args(&app.version_cmd[1..]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // A session of its own, so no terminal: during `omarchy update` the caller's
