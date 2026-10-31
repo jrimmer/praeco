@@ -12,6 +12,13 @@ calls praeco underneath.
   its JSON.
 - **Rust apps** can use the `praeco` library crate directly, or the CLI.
 
+praeco works with any Linux desktop and is at home in Omarchy. An app registers once
+with `praeco init`, and `omarchy update` then brings it up to date along with the rest
+of the system, silently, with the password the update already asked for. Apps that link
+praeco as a library can register their own update command instead, so nothing else has
+to be installed. Elsewhere the same registrations work with `praeco update-all`, run by
+hand or from a timer. See [Updating with the system](#updating-with-the-system-init-and-update-all).
+
 Linux only, on x86_64 and aarch64; each release has static binaries for both. Asset
 selection follows the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64`, ...).
 
