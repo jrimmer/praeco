@@ -1,7 +1,10 @@
 # Builds static praeco binaries for x86_64 and aarch64 Linux and, for a version
-# tag, publishes them with their checksums as a GitHub release, then signs the
-# release with packslip (https://github.com/jdx/packslip). Run it by hand
-# (workflow_dispatch) to build and test without releasing.
+# tag, creates a draft GitHub release with the binaries and their checksums,
+# signs it with packslip (https://github.com/jdx/packslip), and only then
+# publishes it. The release stays a draft until the signature is attached:
+# praeco refuses an unsigned release of an app it has seen signed, so a public
+# release without its signature would block every update until it appeared.
+# Run it by hand (workflow_dispatch) to build and test without releasing.
 name: Release
 
 on:
@@ -83,7 +86,7 @@ jobs:
           ## Install
 
           Static binaries for x86_64 and aarch64 Linux, each with a \`.sha256\` file; \`SHA256SUMS\` lists both.
-          \`packslip.sigstore.json\` is the signed manifest of both binaries (a few minutes after the release appears).
+          \`packslip.sigstore.json\` is the signed manifest of both binaries.
           Apps ship praeco in their own packages: see [Shipping praeco with your app](https://github.com/jrimmer/praeco#shipping-praeco-with-your-app).
           Rust apps can use the crate instead: \`cargo add praeco@$v\`.
           NOTES
@@ -96,15 +99,17 @@ jobs:
           cd dist
           cat praeco-linux-*.sha256 > SHA256SUMS
           sha256sum -c SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft \
             --title "praeco ${GITHUB_REF_NAME#v}" --notes-file ../notes.md \
             praeco-linux-* SHA256SUMS
 
-  # Sign the release. packslip describes the published binaries in one statement
-  # and signs it with this workflow's identity, so there is no key to keep. The
-  # signing job can only read the release; the job after it holds the write
-  # permission and uploads nothing but the bundle. The action is pinned to a
-  # commit because its code decides what gets signed.
+  # Sign the release. packslip describes the binaries in one statement and
+  # signs it with this workflow's identity, so there is no key to keep. The
+  # signing job only reads the build artifacts (the release is still a draft, so
+  # it could not read it anyway); the job after it holds the write permission,
+  # uploads the bundle and publishes the release. If signing fails, the release
+  # stays a draft and nothing reaches users. The action is pinned to a commit
+  # because its code decides what gets signed.
   packslip:
     needs: release
     if: startsWith(github.ref, 'refs/tags/')
@@ -114,10 +119,15 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - uses: jdx/packslip@44e50e5f64551234b4a382d991bd7f7f7d021d06 # v1.11.3
         id: packslip
         with:
-          download: praeco-linux-x86_64 praeco-linux-aarch64
+          artifacts: dist/praeco-linux-x86_64 dist/praeco-linux-aarch64
           bin: praeco
           upload: false
 
@@ -127,7 +137,7 @@ jobs:
           path: ${{ steps.packslip.outputs.bundle }}
           if-no-files-found: error
 
-  publish-packslip:
+  publish:
     needs: packslip
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
@@ -139,7 +149,7 @@ jobs:
           name: packslip-bundle
           path: packslip
 
-      - name: Upload the signed bundle
+      - name: Attach the signed bundle and publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -147,3 +157,4 @@ jobs:
           test -f packslip/packslip.sigstore.json
           gh release upload "$GITHUB_REF_NAME" packslip/packslip.sigstore.json \
             --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

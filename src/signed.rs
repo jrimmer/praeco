@@ -270,7 +270,8 @@ mod imp {
                     ErrorCode::SignatureMissing,
                     format!(
                         "{project} signed its releases before (last: {}), but release {} has no signature. \
-                         It was not installed. If the project has stopped signing on purpose, remove it from {}.",
+                         It was not installed. If the release was only just published, its signature may still be \
+                         on the way: try again in a few minutes. If the project has stopped signing on purpose, remove it from {}.",
                         r.version,
                         release.tag,
                         Store::path_for(env).map(|p| p.display().to_string()).unwrap_or_else(|| "praeco's signers.json".into()),

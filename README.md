@@ -97,6 +97,13 @@ can publish a release can publish a matching checksum. With it, praeco checks th
 signature and the signed digest of the exact file it downloaded, and a stolen upload or
 release token alone is no longer enough to push a bad build.
 
+**Upload the packslip before the release goes public.** Once praeco has seen an app
+signed, it refuses a later release without a bundle (see below), so a release that is
+public for even a few minutes without its signature makes every update fail until the
+file appears, and keeps failing if signing breaks. Create the release as a draft, sign,
+upload the bundle, then publish. praeco's own [release workflow](.github/workflows/release.yml)
+does it in that order.
+
 What praeco does, with no setup by the app or the user:
 
 - It looks for `packslip*.sigstore.json` among the release's assets. With one, it
