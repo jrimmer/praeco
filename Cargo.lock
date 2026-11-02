@@ -1102,6 +1102,7 @@ name = "praeco"
 version = "0.3.1"
 dependencies = [
  "flate2",
+ "libc",
  "nix",
  "packslip",
  "semver",

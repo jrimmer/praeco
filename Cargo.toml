@@ -41,3 +41,6 @@ flate2 = "1"
 [profile.release]
 lto = true
 strip = true
+
+[dev-dependencies]
+libc = "0.2"

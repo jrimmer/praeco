@@ -179,6 +179,29 @@ pub fn write_exec(path: &Path, script: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, script).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    wait_until_not_open_for_writing(path);
+}
+
+/// Tests run on parallel threads. If another thread forks while `write_exec` has the file
+/// open for writing, the child inherits that handle until it execs, and exec-ing the file
+/// meanwhile fails with "Text file busy". Our own handle is closed by now, so wait for any
+/// such stray one: a read lease can only be taken when nobody has the file open for writing.
+fn wait_until_not_open_for_writing(path: &Path) {
+    use std::os::fd::AsRawFd;
+    let Ok(file) = std::fs::File::open(path) else { return };
+    for _ in 0..500 {
+        // SAFETY: fcntl on a file descriptor this function owns, with integer arguments only.
+        let taken = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLEASE, libc::F_RDLCK) };
+        if taken == 0 {
+            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLEASE, libc::F_UNLCK) };
+            return;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::EAGAIN) | Some(libc::EBUSY) => std::thread::sleep(std::time::Duration::from_millis(2)),
+            // The filesystem does not do leases: nothing to wait on.
+            _ => return,
+        }
+    }
 }
 
 /// A shim for a tool: logs its argv to `<dir>/<name>.log`, prints a line
