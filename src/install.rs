@@ -11,6 +11,7 @@ use crate::files;
 use crate::http::Http;
 use crate::progress::Event;
 use crate::release::Release;
+use crate::signed::{self, Plan};
 use crate::source::Source;
 use crate::verify;
 use crate::version;
@@ -248,12 +249,24 @@ pub fn install_with(http: &Http, opts: &InstallOptions, emit: &mut dyn FnMut(&Ev
     // Decide how to get administrator rights before spending a download on it.
     let escalation = if kind.needs_root() { resolve_escalation(opts)? } else { Vec::new() };
 
+    // A packslip bundle, when the release has one, replaces the checksum check.
+    let plan = signed::plan(http, &opts.source, release, opts.token.as_deref(), &opts.env)?;
+
     let dir = private_dir()?;
     let file = verify::download(http, &opts.source, release, asset, dir.path(), &mut |bytes, total| {
         emit(&Event::Downloading { asset: asset.name.clone(), bytes, total });
     })?;
     emit(&Event::Verifying { asset: asset.name.clone() });
-    let digest = verify::verify(http, &opts.source, release, asset, &file)?;
+    let digest = match &plan {
+        Plan::Signed(s) => {
+            // Hash first, so the later re-check also catches a swap between here and the signature check.
+            let digest = verify::sha256_file(&file)?;
+            s.verify_file(&file)?;
+            emit(&Event::Signed { project: s.project().to_string(), signer: s.signer.clone() });
+            digest
+        }
+        Plan::Unsigned => verify::verify(http, &opts.source, release, asset, &file)?,
+    };
 
     let version = release.version.to_string();
     match kind {

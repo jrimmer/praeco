@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Signed releases: when a GitHub release carries a packslip bundle
+  (`packslip*.sigstore.json`), praeco verifies it and checks the download against the
+  signed digest instead of a checksum. A project that has been signed once cannot go back
+  to unsigned releases (`signature_missing`); a bad or mismatched signature is
+  `signature_invalid`. Praeco remembers the repository ID and signer in
+  `~/.config/praeco/signers.json`. Releases without a bundle, and Forgejo and GitHub
+  Enterprise sources, keep the checksum check.
+- New `signed` event in `install`, new `signature_invalid` and `signature_missing` error
+  codes, new library module `signed`.
+- New cargo feature `signed` (default). Building with it needs Rust 1.93, so
+  `rust-version` is now 1.93; `--no-default-features` drops the signature code and its
+  dependencies.
+
 ## 0.3.1 (2026-10-28)
 
 The 0.3.0 tag was never released: its release build failed one test on aarch64 (a bug

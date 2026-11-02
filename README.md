@@ -79,11 +79,45 @@ praeco check --forgejo https://code.example.com owner/repo --current 1.0.4 --jso
 3. **Download** the matching asset into a private (`0700`) temporary directory.
    Only URLs from the release's own asset list are used, and only if they belong to
    the configured repository.
-4. **Verify** the SHA-256 against the release's `<asset>.sha256` file and/or
-   `SHA256SUMS`. No match, or no checksum at all, means failure: nothing is
+4. **Verify.** If the release (on GitHub) carries a signed manifest, the
+   download is checked against its signature, see [Signed releases](#signed-releases).
+   Otherwise the SHA-256 is checked against the release's `<asset>.sha256` file
+   and/or `SHA256SUMS`. No match, or no checksum at all, means failure: nothing is
    installed.
 5. **Install** (dialog or terminal mode).
 6. **Restart** the app, if asked.
+
+### Signed releases
+
+A release can carry a [packslip](https://github.com/jdx/packslip): one file,
+`packslip.sigstore.json`, signed by the project's release workflow and uploaded
+beside the other assets. **Publish one if you can.** Without it, praeco can only compare
+the download with a checksum that comes from the same place as the file, so anyone who
+can publish a release can publish a matching checksum. With it, praeco checks the
+signature and the signed digest of the exact file it downloaded, and a stolen upload or
+release token alone is no longer enough to push a bad build.
+
+What praeco does, with no setup by the app or the user:
+
+- It looks for `packslip*.sigstore.json` among the release's assets. With one, it
+  verifies the bundle before downloading anything, then checks the download against it.
+  A bad signature, a different project or version, or an asset the signature does not
+  list stops the update: `signature_invalid`.
+- The first signed release of a project is trusted on first use, bound to the
+  repository's ID on GitHub rather than only its name (a repository deleted and
+  re-created under the same name does not pass). Praeco remembers the repository and the
+  signing workflow in `~/.config/praeco/signers.json`. Later releases must match.
+- **A project that was signed once cannot go back to unsigned releases**:
+  a release without a bundle is refused with `signature_missing`. If a project stops
+  signing on purpose, or changes its release workflow, delete its entry from
+  `signers.json` to accept that.
+- Releases without a bundle are installed as before, with the checksum check. Signing is
+  never required.
+
+Only repositories on github.com are covered. Forgejo and GitHub Enterprise sources
+stay on checksums, because packslip names a signer only for GitHub and GitLab projects.
+The check needs the `signed` cargo feature, on by default; see
+[Building and testing](#building-and-testing).
 
 A check is one request. It sends `If-None-Match` with the cached `ETag` (cache in
 `$XDG_CACHE_HOME/praeco`, or `~/.cache/praeco`), so repeated checks are cheap:
@@ -244,7 +278,7 @@ Failure (exit code 1: offline, rate limit, bad response, ...):
 
 Error codes: `usage`, `invalid_version`, `network`, `rate_limited`, `api`,
 `no_release`, `no_asset`, `unsupported`, `checksum_missing`, `checksum_mismatch`,
-`download`, `needs_terminal`, `auth_cancelled`, `auth_failed`, `install_failed`,
+`signature_invalid`, `signature_missing`, `download`, `needs_terminal`, `auth_cancelled`, `auth_failed`, `install_failed`,
 `terminal_closed`, `restart_failed`, `io`. Messages are plain language and can be shown to a user as is.
 
 ### `detect`
@@ -274,7 +308,8 @@ A successful dialog-mode install with a restart:
 | --- | --- | --- |
 | `resolving` | `version` | First event |
 | `downloading` | `asset`, `bytes`, `total` | First, last, and at most every ~150 ms between. `total` is `null` if unknown. |
-| `verifying` | `asset` | The SHA-256 check |
+| `verifying` | `asset` | The SHA-256 or signature check |
+| `signed` | `project`, `signer` | Only for a signed release, after the signature checked out; `signer` is the workflow that signed it |
 | `installing` | `kind`, `message` | `message` is plain language |
 | `installed` | `version`, `kind` | The new version is on disk |
 | `restarting` | `message` | Only with `--restart`; two events (closing, starting) |
@@ -791,10 +826,20 @@ What is trusted:
 
 What is not trusted or not done:
 
-- **There are no signatures yet.** The checksum comes from the same place as the
-  file, so it catches corruption and a tampered mirror or CDN, but not a compromised
-  repository or release account: anyone who can publish a release can publish a
-  matching checksum. Signature verification is future work.
+- **A packslip signature, when the release has one** (GitHub only). The signature is
+  made by the repository's release workflow and recorded in a public transparency log
+  (Sigstore's Rekor). praeco checks it against the repository's immutable ID and holds
+  later releases to the same signer, so a mirror or CDN cannot swap the file, a release
+  or upload token alone cannot publish a build, and a signed project cannot quietly
+  fall back to unsigned releases. What it does not prove: that the workflow itself was
+  uncompromised. Anyone who can change and run the repository's release workflow can
+  still get a bad release signed, and praeco cannot tell. It also does not say a
+  release is the newest, or that it was not withdrawn.
+- **The checksum published with the release, for releases without a signature.** The
+  checksum comes from the same place as the file, so it catches corruption and a
+  tampered mirror or CDN, but not a compromised repository or release account: anyone
+  who can publish a release can publish a matching checksum. Forgejo and GitHub
+  Enterprise sources are in this group.
 - praeco does not check that the requested version is newer than the installed one
   (the app decides), or what is inside a package.
 
@@ -841,7 +886,8 @@ Privilege handling:
 - `update-all` reads versions by running each app's version command; it does not
   restart apps, and registrations are removed only by `praeco init --remove`.
 - The system hook exists for Omarchy only.
-- No delta updates, no rollback, no signature checks.
+- No delta updates, no rollback.
+- Signatures are checked only for packslip-signed releases on github.com.
 
 ## Building and testing
 
@@ -849,7 +895,13 @@ Privilege handling:
 cargo build --release      # target/release/praeco
 cargo test                 # offline, no root
 cargo clippy --all-targets
+cargo test --test signed_live -- --ignored   # needs the network: a real signed release
 ```
+
+Signature checking is the `signed` feature (on by default). It brings in the `packslip`
+crate and what that needs: Rust 1.93 or newer, a C compiler for its crypto, and a
+larger build. `--no-default-features` leaves it out and every release is verified by
+checksum alone.
 
 The tests need neither network nor root. They use a fake release server bound to
 `127.0.0.1`, fake `pacman`/`dpkg`/`rpm`/`apt-get`/`dnf`/`pkexec`/`sudo` shims on a

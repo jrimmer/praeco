@@ -33,7 +33,7 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn asset_url(source: &Source, release: &Release, asset: &Asset) -> Result<Url> {
+pub(crate) fn asset_url(source: &Source, release: &Release, asset: &Asset) -> Result<Url> {
     let url = Url::parse(&asset.url)
         .map_err(|_| Error::new(ErrorCode::Download, format!("The release lists a bad address for {}", asset.name)))?;
     if !source.allows_download(&url, &release.assets) {
@@ -131,7 +131,7 @@ pub fn parse_checksum(contents: &str, name: &str, bare_ok: bool) -> Option<Strin
     None
 }
 
-fn fetch_text(http: &Http, source: &Source, release: &Release, asset: &Asset) -> Result<String> {
+pub(crate) fn fetch_text(http: &Http, source: &Source, release: &Release, asset: &Asset) -> Result<String> {
     let url = asset_url(source, release, asset)?;
     let resp = http.get(&url, "text/plain", None, &[])?;
     if resp.status() != 200 {

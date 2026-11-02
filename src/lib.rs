@@ -20,6 +20,7 @@ pub mod progress;
 pub mod registry;
 pub mod release;
 pub mod restart;
+pub mod signed;
 pub mod source;
 pub mod terminal;
 pub mod update;

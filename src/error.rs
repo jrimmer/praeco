@@ -15,6 +15,8 @@ pub enum ErrorCode {
     Unsupported,
     ChecksumMissing,
     ChecksumMismatch,
+    SignatureInvalid,
+    SignatureMissing,
     Download,
     NeedsTerminal,
     AuthCancelled,
@@ -38,6 +40,8 @@ impl ErrorCode {
             ErrorCode::Unsupported => "unsupported",
             ErrorCode::ChecksumMissing => "checksum_missing",
             ErrorCode::ChecksumMismatch => "checksum_mismatch",
+            ErrorCode::SignatureInvalid => "signature_invalid",
+            ErrorCode::SignatureMissing => "signature_missing",
             ErrorCode::Download => "download",
             ErrorCode::NeedsTerminal => "needs_terminal",
             ErrorCode::AuthCancelled => "auth_cancelled",
@@ -50,7 +54,7 @@ impl ErrorCode {
     }
 
     pub fn from_code(s: &str) -> ErrorCode {
-        const ALL: [ErrorCode; 18] = [
+        const ALL: [ErrorCode; 20] = [
             ErrorCode::Usage,
             ErrorCode::InvalidVersion,
             ErrorCode::Network,
@@ -61,6 +65,8 @@ impl ErrorCode {
             ErrorCode::Unsupported,
             ErrorCode::ChecksumMissing,
             ErrorCode::ChecksumMismatch,
+            ErrorCode::SignatureInvalid,
+            ErrorCode::SignatureMissing,
             ErrorCode::Download,
             ErrorCode::NeedsTerminal,
             ErrorCode::AuthCancelled,

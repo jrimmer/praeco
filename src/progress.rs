@@ -11,6 +11,8 @@ pub enum Event {
     Resolving { version: String },
     Downloading { asset: String, bytes: u64, total: Option<u64> },
     Verifying { asset: String },
+    /// The release carries a packslip signature and the download matched it.
+    Signed { project: String, signer: String },
     Installing { kind: InstallKind, message: String },
     /// The new version is on disk. A restart, if requested, follows.
     Installed { version: String, kind: InstallKind },
@@ -44,6 +46,7 @@ impl Event {
                 None => format!("Downloading {asset}: {}", mb(*bytes)),
             },
             Event::Verifying { .. } => "Checking that the download is genuine (SHA-256)...".to_string(),
+            Event::Signed { signer, .. } => format!("The signature checks out (signed by {signer})."),
             Event::Installing { message, .. } => message.clone(),
             Event::Installed { version, .. } => format!("Version {version} is installed."),
             Event::Restarting { message } => message.clone(),
