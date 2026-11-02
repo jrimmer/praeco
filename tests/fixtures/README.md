@@ -1,1 +1,2 @@
 hk-v2.3.0.sigstore.json: the release bundle of jdx/hk 2.3.0, copied from the packslip repository (tests/fixtures, MIT, https://github.com/jdx/packslip). Used to check signature verification offline.
+praeco-v0.4.0-rc.1.sigstore.json: the bundle signed by this repository's own release workflow for the throwaway v0.4.0-rc.1 (jrimmer/praeco, repository ID 1434004233). Used to check, offline, that a later tag of the same workflow continues the signer.

@@ -424,6 +424,39 @@ mod tests {
         assert!(e.to_string().contains("signer changed"), "{e}");
     }
 
+    // praeco's own throwaway release v0.4.0-rc.1, signed by release.yml on a real run.
+    const OWN: &str = include_str!("../tests/fixtures/praeco-v0.4.0-rc.1.sigstore.json");
+    const OWN_SIGNER: &str = "https://github.com/jrimmer/praeco/.github/workflows/release.yml@refs/tags/v0.4.0-rc.1";
+
+    fn own_record(signer: &str, pins_workflow: bool) -> Record {
+        Record { pin: None, signer: signer.into(), pins_workflow, version: "0.4.0-rc.0".into() }
+    }
+
+    #[test]
+    fn a_real_release_signed_by_the_projects_own_workflow_verifies() {
+        let ok = check_bundle("github.com/jrimmer/praeco", OWN, None, Some("1434004233"), &[]).unwrap();
+        assert_eq!(ok.verified.version, "0.4.0-rc.1");
+        assert_eq!(ok.verified.key_id, OWN_SIGNER);
+    }
+
+    #[test]
+    fn the_next_tag_of_the_same_workflow_is_the_same_signer() {
+        // The signer names the tag it ran for, so every release has a different string.
+        // Recording the previous release's signer must not make the next one a stranger.
+        for pins_workflow in [false, true] {
+            let rec = own_record("https://github.com/jrimmer/praeco/.github/workflows/release.yml@refs/tags/v0.4.0-rc.0", pins_workflow);
+            check_bundle("github.com/jrimmer/praeco", OWN, Some(&rec), Some("1434004233"), &[])
+                .unwrap_or_else(|e| panic!("a new tag of the same workflow was refused (pins_workflow {pins_workflow}): {e}"));
+        }
+    }
+
+    #[test]
+    fn a_different_workflow_of_the_same_repository_is_not_the_same_signer() {
+        let rec = own_record("https://github.com/jrimmer/praeco/.github/workflows/other.yml@refs/tags/v0.4.0-rc.0", false);
+        let e = check_bundle("github.com/jrimmer/praeco", OWN, Some(&rec), Some("1434004233"), &[]).err();
+        assert!(e.is_some_and(|e| e.to_string().contains("signer changed")));
+    }
+
     #[test]
     fn finds_bundle_assets() {
         let r = release("v1.0.0", &["app.tar.gz", "packslip.sigstore.json", "PACKSLIP-tool.sigstore.json", "other.sigstore.json", "packslip.txt"]);
