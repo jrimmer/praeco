@@ -50,6 +50,7 @@ bigger, and building it from source needs a newer Rust and a C compiler.
 - [Updating with the system: `init` and `update-all`](#updating-with-the-system-init-and-update-all)
   - [Launching praeco from an app](#launching-praeco-from-an-app)
 - [Shipping praeco with your app](#shipping-praeco-with-your-app)
+  - [AppImages: keep patchelf away from praeco](#appimages-keep-patchelf-away-from-praeco)
   - [Verifying the praeco you ship](#verifying-the-praeco-you-ship)
   - [Building praeco from source](#building-praeco-from-source)
   - [Rust apps using the library](#rust-apps-using-the-library)
@@ -730,6 +731,47 @@ build. If the size matters and your app is written in Rust, the library can be b
 without signature checking, see [Rust apps using the library](#rust-apps-using-the-library).
 Building from source now needs Rust 1.93 and a C compiler, see
 [Building praeco from source](#building-praeco-from-source).
+
+### AppImages: keep patchelf away from praeco
+
+praeco is a static-pie binary. Editing it with `patchelf` (for example
+`patchelf --set-rpath '$ORIGIN' praeco`) **exits 0 and reports nothing**, but leaves a
+file that crashes with a segmentation fault as soon as it starts. The damage only shows
+at runtime, so the exit code of the patchelf step tells you nothing. This was reproduced
+with patchelf 0.18.0 on every praeco release from 0.1.1 to 0.4.0, so it is a property of
+static-pie files and not of one praeco version. A copy that was only copied, or only
+`strip`ped, runs normally: `strip` is safe, so do not blame it.
+
+This matters for AppImages because `linuxdeploy` runs patchelf (it logs
+`Setting rpath in ELF file ... to $ORIGIN`) on every ELF file in the AppDir, praeco
+included. praeco has no shared libraries, so the rpath is useless to it, and the result
+is an app whose updater cannot start. Packages that do not go through linuxdeploy
+(pacman, deb, rpm, tarball) are not affected, unless your tarball is built from the same
+patched AppDir.
+
+The symptom is a silent crash: `praeco --version` prints nothing and the shell reports
+`Segmentation fault`. If your build discards the output of the check, you will see only
+that.
+
+Whatever builds your AppImage, make sure the praeco inside is the file you verified.
+Put it back after linuxdeploy has finished, compare it with the download, and pack the
+image with a step that does not run linuxdeploy (and so patchelf) again:
+
+```sh
+# after linuxdeploy has finished with the AppDir
+install -Dm755 "praeco-linux-$arch" AppDir/usr/lib/myapp/praeco
+cmp "praeco-linux-$arch" AppDir/usr/lib/myapp/praeco
+AppDir/usr/lib/myapp/praeco --version        # must print "praeco <version>"
+# then, for example: linuxdeploy-plugin-appimage --appdir AppDir
+```
+
+An app that ships praeco has packed its AppImage this way, and restored praeco the same
+way for its tarball; both passed a `praeco --version` check on ubuntu:24.04 and
+debian:trixie. That is one passing CI run, not a long record.
+
+Do the `--version` check on the finished image too (`--appimage-extract`, then run praeco).
+A `praeco --version` run belongs in every package's smoke test, whatever the format: a
+praeco that does not start gives your users no error, the updater just never works.
 
 ### Verifying the praeco you ship
 
