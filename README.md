@@ -22,10 +22,22 @@ hand or from a timer. See [Updating with the system](#updating-with-the-system-i
 Linux only, on x86_64 and aarch64; each release has static binaries for both. Asset
 selection follows the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64`, ...).
 
+**Signed releases, thanks to [packslip](https://github.com/jdx/packslip).** An app can
+publish a signed manifest of its release files, and praeco checks it before it installs
+anything, with no setup by the app or the user. The signed format, the verifier praeco
+embeds, and the signing action that praeco's own releases use are all the work of the
+packslip project; praeco only decides when to check and what to remember. Without it, the
+best praeco could do was compare a download with a checksum that comes from the same
+place as the file. If you ship an app, please [sign your releases](#signing-your-apps-releases).
+Since 0.4.0, praeco's own releases are signed too, and the
+[packaging notes](#shipping-praeco-with-your-app) changed with them: the binary is
+bigger, and building it from source needs a newer Rust and a C compiler.
+
 ## Contents
 
 - [Quick start](#quick-start)
 - [How an update works](#how-an-update-works)
+  - [Signed releases](#signed-releases)
 - [CLI reference](#cli-reference)
   - [Exit codes](#exit-codes)
 - [JSON formats](#json-formats)
@@ -38,6 +50,10 @@ selection follows the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64
 - [Updating with the system: `init` and `update-all`](#updating-with-the-system-init-and-update-all)
   - [Launching praeco from an app](#launching-praeco-from-an-app)
 - [Shipping praeco with your app](#shipping-praeco-with-your-app)
+  - [Verifying the praeco you ship](#verifying-the-praeco-you-ship)
+  - [Building praeco from source](#building-praeco-from-source)
+  - [Rust apps using the library](#rust-apps-using-the-library)
+  - [Signing your app's releases](#signing-your-apps-releases)
 - [Using praeco from an app](#using-praeco-from-an-app)
   - [C++/Qt (or any language): call the CLI](#cqt-or-any-language-call-the-cli)
   - [Rust: use the library](#rust-use-the-library)
@@ -46,6 +62,7 @@ selection follows the machine's architecture (`x86_64`/`amd64`, `aarch64`/`arm64
 - [Security](#security)
 - [Limitations](#limitations)
 - [Building and testing](#building-and-testing)
+- [Acknowledgements](#acknowledgements)
 - [License](#license)
 
 ## Quick start
@@ -91,7 +108,10 @@ praeco check --forgejo https://code.example.com owner/repo --current 1.0.4 --jso
 
 A release can carry a [packslip](https://github.com/jdx/packslip): one file,
 `packslip.sigstore.json`, signed by the project's release workflow and uploaded
-beside the other assets. **Publish one if you can.** Without it, praeco can only compare
+beside the other assets. All of this rests on the packslip project: praeco uses its Rust
+crate to verify bundles, and its GitHub Action signs praeco's own releases. packslip
+records each signature in Sigstore's public transparency log, so there is no signing key
+for a project to keep or lose. **Publish one if you can.** Without it, praeco can only compare
 the download with a checksum that comes from the same place as the file, so anyone who
 can publish a release can publish a matching checksum. With it, praeco checks the
 signature and the signed digest of the exact file it downloaded, and a stolen upload or
@@ -692,39 +712,165 @@ In each case praeco is at `<directory of the executable>/../lib/myapp/praeco`, w
 is what the C++ examples above and below use. Look nowhere else, and when the file is
 missing (a source build, say) hide the update UI rather than search for one.
 
-**Putting it into a package.** Either download a release's static binary and check
-it against its `.sha256` file, which needs no Rust toolchain:
+**Putting it into a package.** Download a release's static binary and check it against
+its `.sha256` file, which needs no Rust toolchain:
 
 ```sh
-v=0.3.1; arch=$(uname -m)        # x86_64 or aarch64
+v=0.4.0; arch=$(uname -m)        # x86_64 or aarch64
 base=https://github.com/jrimmer/praeco/releases/download/v$v
 curl -fLO "$base/praeco-linux-$arch" -O "$base/praeco-linux-$arch.sha256"
 sha256sum -c "praeco-linux-$arch.sha256"
 install -Dm755 "praeco-linux-$arch" "$pkgdir/usr/lib/myapp/praeco"
 ```
 
-or build a tagged release from source:
+**What changed in 0.4.0.** Signature checking is part of the binary now, so it grew: the
+x86_64 download is 7.7 MB (5.9 MB on aarch64), against 3.2 MB (2.8 MB) for 0.3.1. It is
+still one static file with nothing to install beside it, and there is no separate lean
+build. If the size matters and your app is written in Rust, the library can be built
+without signature checking, see [Rust apps using the library](#rust-apps-using-the-library).
+Building from source now needs Rust 1.93 and a C compiler, see
+[Building praeco from source](#building-praeco-from-source).
+
+### Verifying the praeco you ship
+
+From 0.4.0 each praeco release carries a packslip, `packslip.sigstore.json`, signed by this
+repository's release workflow. The checksum above catches a damaged download; the
+signature also shows that the file was built by that workflow and not swapped by someone
+who could upload to the release. Check it in the packaging script, with the packslip
+command-line tool (`cargo install packslip`; see [packslip's documentation](https://packslip.dev)
+for other ways to get it):
 
 ```sh
-git clone --depth 1 --branch v0.3.1 https://github.com/jrimmer/praeco.git
+curl -fLO "$base/packslip.sigstore.json"
+packslip verify packslip.sigstore.json --artifact "praeco-linux-$arch"
+```
+
+It prints `ok: github.com/jrimmer/praeco`, the version and the signing workflow, and exits
+0. Any other result means the file must not be shipped. Keep the file name as published:
+packslip matches the file by name. The bundle covers both architectures, so the same file
+verifies either binary.
+
+### Building praeco from source
+
+```sh
+git clone --depth 1 --branch v0.4.0 https://github.com/jrimmer/praeco.git
 (cd praeco && cargo build --locked --release)
 install -Dm755 praeco/target/release/praeco "$pkgdir/usr/lib/myapp/praeco"
 ```
 
-For an Arch package built from source with makepkg, add `options=(!lto)` to the
-PKGBUILD: makepkg's link-time optimisation flags break the link of praeco's C
-dependency (ring).
+You need Rust 1.93 or newer (up from 1.85 before 0.4.0, which is what packslip requires)
+and a C compiler: the signature check uses a cryptography library that cargo compiles
+from its C source. The release binaries are built for the `-unknown-linux-musl` targets,
+which is what makes them static; that needs `musl-tools`, and a normal glibc build is fine
+for a package that carries its own dependencies.
 
-**Rust apps using the library** add it from crates.io (`cargo add praeco`) and bump
-the version the same way:
+For an Arch package built with makepkg, add `options=(!lto)` to the PKGBUILD. makepkg
+turns on link-time optimisation for C code by default, and with it the link fails with
+undefined `aws_lc_*` symbols (the signature check's cryptography library), or undefined
+`ring_core_*` symbols in a build without signatures. Without LTO both build. `--no-default-features`
+leaves the signature check out, which makes the binary about 3 MB again and the build
+much shorter (79 crates instead of 169), at the price of verifying every release by
+checksum alone.
+
+### Rust apps using the library
+
+Rust apps add praeco from crates.io (`cargo add praeco`) and bump the version the same
+way:
 
 ```toml
 [dependencies]
-praeco = "0.3"
+praeco = "0.4"
+# Without signature checking, and without the 90 or so extra crates it brings
+# (a C compiler is then not needed either):
+# praeco = { version = "0.4", default-features = false }
 ```
 
-A Rust app that wants the terminal fallback still ships the `praeco` binary at the
-path above, because terminal mode runs the CLI.
+The default build checks signatures. A Rust app that wants the terminal fallback still
+ships the `praeco` binary at the path above, because terminal mode runs the CLI.
+
+### Signing your app's releases
+
+An app whose releases carry a packslip gets signature checking from every praeco, with
+nothing to configure in the app and nothing for the user to do. The first praeco that sees
+a signed release remembers the signer, and from then on a release of that app without a
+valid signature is refused (see [Signed releases](#signed-releases)). Signing is done in
+the release workflow on GitHub, with packslip's action, and uses the workflow's own
+identity, so there is no key. This is the shape praeco's own
+[release workflow](.github/workflows/release.yml) uses: create the release as a **draft**,
+sign, attach the bundle, then publish.
+
+```yaml
+permissions:
+  contents: read
+jobs:
+  build:        # your existing job: build and upload each file as an artifact
+    # ...
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --generate-notes dist/*
+  sign:
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write          # the keyless signature
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - uses: jdx/packslip@44e50e5f64551234b4a382d991bd7f7f7d021d06   # v1.11.3
+        id: packslip
+        with:
+          artifacts: dist/myapp-linux-x86_64 dist/myapp-linux-aarch64   # every file an update may install
+          bin: myapp
+          upload: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packslip-bundle
+          path: ${{ steps.packslip.outputs.bundle }}
+          if-no-files-found: error
+  publish:
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: packslip-bundle, path: packslip }
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" packslip/packslip.sigstore.json --repo "$GITHUB_REPOSITORY"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+```
+
+Things to get right:
+
+- **Pin the action to a commit**, as above. Its code decides what gets signed.
+- **List every file praeco may install.** praeco matches the file it downloaded to the
+  bundle by name, and refuses a file the bundle does not list. A package or AppImage
+  added to the release by hand after signing is not in the bundle, so praeco will not
+  install it. Build everything in the signing run, or leave it out of what users update
+  to. The example describes plain executables; for packages, AppImages and archives see
+  [packslip's documentation](https://packslip.dev) for how to describe each file.
+- **Keep one bundle per release**, named `packslip.sigstore.json`. praeco looks for
+  `packslip*.sigstore.json` among the assets.
+- **Never publish before the bundle is attached.** A release that is public without its
+  signature fails every update of an app praeco has seen signed, until the file appears.
+  The draft-first order above prevents that, and if signing fails the draft simply stays
+  invisible.
+- Only github.com repositories are checked. A project on Forgejo or GitHub Enterprise
+  keeps the checksum check whether or not it signs.
+
+What a signature does and does not prove is in [Security](#security).
 
 ## Using praeco from an app
 
@@ -805,6 +951,7 @@ All blocking; run it on a worker thread.
 | `detect(&Env, &Path) -> Detection` | How an executable was installed |
 | `InstallOptions`, `install(...)` | Download, verify, install; progress through a callback |
 | `update(&InstallOptions, Option<&RestartSpec>, &mut FnMut(&Event))` | Install in either mode, restart, finish with `done` |
+| `signed::plan`, `signed::Store` | The signature check and the remembered signers (feature `signed`, on by default) |
 | `Env` | Everything praeco reads from the machine (`PATH`, `APPIMAGE`, uid, `/proc` root, ...), replaceable in tests |
 | `InstallOptions::escalation` | Replaces `pkexec`/`sudo` (an argv prefix) |
 
@@ -907,14 +1054,27 @@ cargo test --test signed_live -- --ignored   # needs the network: a real signed 
 
 Signature checking is the `signed` feature (on by default). It brings in the `packslip`
 crate and what that needs: Rust 1.93 or newer, a C compiler for its crypto, and a
-larger build. `--no-default-features` leaves it out and every release is verified by
-checksum alone.
+larger build (169 crates instead of 79, a 7.7 MB static binary instead of 3.2 MB).
+`--no-default-features` leaves it out and every release is verified by checksum alone.
+Packagers: see [Building praeco from source](#building-praeco-from-source) for the
+makepkg flag.
 
 The tests need neither network nor root. They use a fake release server bound to
 `127.0.0.1`, fake `pacman`/`dpkg`/`rpm`/`apt-get`/`dnf`/`pkexec`/`sudo` shims on a
 private `PATH`, a recording escalation command that proves the exact package-manager
 argv without running it, a fake `/proc` for the polkit probe, a fake `APPIMAGE`, and
 dummy child processes for restart.
+
+## Acknowledgements
+
+praeco's signed releases are [packslip](https://github.com/jdx/packslip)'s work, and
+a large part of what 0.4.0 can promise comes from it: the manifest format, the Rust
+crate that verifies it offline against Sigstore's public records, the GitHub Action that
+signs praeco's own releases, and the policy that makes a project's name say who may sign
+for it. The test suite checks a real bundle from jdx's `hk` release that ships in the
+packslip repository (see `tests/fixtures`). Thank you to the packslip authors and
+contributors, and if you ship software, go and look at what it can do for your own
+releases at [packslip.dev](https://packslip.dev).
 
 ## License
 

@@ -1,19 +1,34 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-02)
 
-- Signed releases: when a GitHub release carries a packslip bundle
-  (`packslip*.sigstore.json`), praeco verifies it and checks the download against the
-  signed digest instead of a checksum. A project that has been signed once cannot go back
-  to unsigned releases (`signature_missing`); a bad or mismatched signature is
-  `signature_invalid`. Praeco remembers the repository ID and signer in
+Signed releases, built on [packslip](https://github.com/jdx/packslip). The signed
+format, the verifier praeco embeds and the action that signs praeco's own releases are
+packslip's; thank you to its authors.
+
+- When a GitHub release carries a packslip bundle (`packslip*.sigstore.json`), praeco
+  verifies it before downloading anything and checks the download against the signed
+  digest instead of a checksum. A project that has been signed once cannot go back to
+  unsigned releases (`signature_missing`); a bad or mismatched signature is
+  `signature_invalid`. praeco remembers the repository ID and signer in
   `~/.config/praeco/signers.json`. Releases without a bundle, and Forgejo and GitHub
-  Enterprise sources, keep the checksum check.
+  Enterprise sources, keep the checksum check. Signing is never required.
+- praeco's own releases are signed. Each carries `packslip.sigstore.json`, covering both
+  binaries; see "Verifying the praeco you ship" in the README. The release workflow
+  creates the release as a draft, signs, attaches the bundle and only then publishes it.
+- Packaging changed. The static binary is 7.7 MB on x86_64 and 5.9 MB on aarch64 (3.2 MB
+  and 2.8 MB in 0.3.1). Building from source needs Rust 1.93 (`rust-version` is now
+  1.93, up from 1.85) and a C compiler, and with makepkg's default link-time optimisation
+  the link fails: add `options=(!lto)` to the PKGBUILD. The README's packaging section is
+  rewritten, with how to verify the binary you ship and how to sign your own app's
+  releases.
+- New cargo feature `signed`, on by default. Rust apps that link the library and do not
+  want the signature check, or the 90 or so crates it brings (169 against 79 in a Linux
+  build), use `default-features = false`.
 - New `signed` event in `install`, new `signature_invalid` and `signature_missing` error
   codes, new library module `signed`.
-- New cargo feature `signed` (default). Building with it needs Rust 1.93, so
-  `rust-version` is now 1.93; `--no-default-features` drops the signature code and its
-  dependencies.
+- Test fix: scripts written by the tests no longer fail now and then with "Text file
+  busy" when another test thread forks while they are being written.
 
 ## 0.3.1 (2026-10-28)
 
